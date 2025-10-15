@@ -30,6 +30,8 @@ import torch
 import torch.nn as nn
 import torchvision.utils
 import yaml
+
+import comet_ml
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 
 from timm import utils
@@ -62,6 +64,7 @@ try:
     has_functorch = True
 except ImportError as e:
     has_functorch = False
+
 
 has_compile = hasattr(torch, 'compile')
 
@@ -160,10 +163,20 @@ group.add_argument('--head-init-bias', default=None, type=float,
                    help='Head initialization bias value')
 group.add_argument('--torchcompile-mode', type=str, default=None,
                     help="torch.compile mode (default: None).")
-group.add_argument('--torchcompile-fullgraph', type=str, default=False,
+group.add_argument('--torchcompile-fullgraph', action='store_true', default=False,
                     help="torch.compile fullgraph (default: None).")
-group.add_argument('--torchcompile-dynamic', type=str, default=True,
+group.add_argument('--torchcompile-dynamic', action='store_false', default=True,
                     help="torch.compile dynamic (default: None).")
+group.add_argument('--torchcompile-cache-dir', default='', type=str,
+                    help="torch.compile dynamic (default: None).")
+
+group.add_argument('--comet-exp-name', default='', type=str,
+                    help="torch.compile dynamic (default: None).")
+group.add_argument('--comet-exp-key', default='', type=str,
+                    help="torch.compile dynamic (default: None).")
+
+#project_name=args.comet_exp_name,
+#experiment_key=args.comet_exp_key or None
 
 # scripting / codegen
 scripting_group = group.add_mutually_exclusive_group()
@@ -448,6 +461,18 @@ def main():
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
+        
+    if args.torchcompile_cache_dir:
+        assert os.path.isdir(args.torchcompile_cache_dir)
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = args.torchcompile_cache_dir
+    
+    comet_exp = None
+    if args.comet_exp_name:
+        comet_exp = comet_ml.start(
+            api_key=os.getenv("COMET_API_KEY"),
+            project_name=args.comet_exp_name,
+            experiment_key=args.comet_exp_key or None
+        )
 
     args.prefetcher = not args.no_prefetcher
     args.grad_accum_steps = max(1, args.grad_accum_steps)
@@ -1061,6 +1086,18 @@ def main():
                     write_header=best_metric is None,
                     log_wandb=args.log_wandb and has_wandb,
                 )
+                
+            if comet_exp is not None:
+                # Ensure plain numbers (timm returns floats already, but be defensive)
+                def _nums(d):
+                    return {k: float(v) for k, v in d.items() if isinstance(v, (int, float))}
+                to_log = {f"train/{k}": v for k, v in _nums(train_metrics).items()}
+                lrs = [pg['lr'] for pg in optimizer.param_groups]
+                avg_lr = sum(lrs) / len(lrs)
+                to_log["lr"] = float(avg_lr)
+                if eval_metrics is not None:
+                    to_log.update({f"val/{k}": v for k, v in _nums(eval_metrics).items()})
+                comet_exp.log_metrics(to_log, step=epoch)
 
             if eval_metrics is not None:
                 latest_metric = eval_metrics[eval_metric]
