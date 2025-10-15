@@ -218,7 +218,6 @@ def create_dataset(
         # FIXME support more advance split cfg for ImageFolder/Tar datasets in the future
         if search_split and os.path.isdir(root):
             # look for split specific sub-folder in root
-            print(root, split)
             root = _search_split(root, split)
         ds = ImageDataset(
             root,

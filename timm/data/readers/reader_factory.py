@@ -14,7 +14,7 @@ def create_reader(
 ):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     name = name.lower()
-    name = name.split('/', 1)
+    name = name.split(':', 1)
     prefix = ''
     if len(name) > 1:
         prefix = name[0]
@@ -38,9 +38,8 @@ def create_reader(
         from .reader_wds import ReaderWds
         kwargs.pop('download', False)
         reader = ReaderWds(root=root, name=name, split=split, **kwargs)
-    elif name.startswith('hfds-disk'):
-        path = name.split(':', 1)[1] if ':' in name else name.split('/', 1)[1]
-        return ReaderHfdsDisk(root=path, split=split, **kwargs)
+    elif prefix.startswith('hfds-disk'):
+        return ReaderHfdsDisk(root=name, split=split, **kwargs)
         
     else:
         assert os.path.exists(root)
