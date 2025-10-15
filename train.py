@@ -160,6 +160,10 @@ group.add_argument('--head-init-bias', default=None, type=float,
                    help='Head initialization bias value')
 group.add_argument('--torchcompile-mode', type=str, default=None,
                     help="torch.compile mode (default: None).")
+group.add_argument('--torchcompile-fullgraph', type=str, default=False,
+                    help="torch.compile fullgraph (default: None).")
+group.add_argument('--torchcompile-dynamic', type=str, default=True,
+                    help="torch.compile dynamic (default: None).")
 
 # scripting / codegen
 scripting_group = group.add_mutually_exclusive_group()
@@ -652,6 +656,9 @@ def main():
                 model_ema,
                 backend=args.torchcompile,
                 mode=args.torchcompile_mode,
+                fullgraph=args.torchcompile_fullgraph,
+                dynamic=args.torchcompile_dynamic
+                
             )
 
     # setup distributed training
@@ -670,7 +677,9 @@ def main():
     if args.torchcompile:
         # torch compile should be done after DDP
         assert has_compile, 'A version of torch w/ torch.compile() is required for --compile, possibly a nightly.'
-        model = torch.compile(model, backend=args.torchcompile, mode=args.torchcompile_mode)
+        model = torch.compile(model, backend=args.torchcompile, mode=args.torchcompile_mode,
+                fullgraph=args.torchcompile_fullgraph,
+                dynamic=args.torchcompile_dynamic)
 
     # create the train and eval datasets
     if args.data and not args.data_dir:
