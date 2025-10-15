@@ -18,6 +18,9 @@ _logger = logging.getLogger(__name__)
 _ERROR_RETRY = 50
 
 
+        
+
+
 class ImageDataset(data.Dataset):
 
     def __init__(
@@ -54,7 +57,17 @@ class ImageDataset(data.Dataset):
         img, target, *features = self.reader[index]
 
         try:
-            img = img.read() if self.load_bytes else Image.open(img)
+            if self.load_bytes:
+                img = img.read() if hasattr(img, "read") else (img if isinstance(img, (bytes, bytearray, memoryview)) else open(img, "rb").read())
+            else:
+                if isinstance(img, Image.Image):
+                    pass  # already PIL
+                elif isinstance(img, (bytes, bytearray, memoryview)):
+                    img = Image.open(io.BytesIO(img))
+                elif hasattr(img, "read"):
+                    img = Image.open(img)
+                else:
+                    img = Image.open(img)
         except Exception as e:
             _logger.warning(f'Skipped sample (index {index}, file {self.reader.filename(index)}). {str(e)}')
             self._consecutive_errors += 1

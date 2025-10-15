@@ -3,6 +3,7 @@ from typing import Optional
 
 from .reader_image_folder import ReaderImageFolder
 from .reader_image_in_tar import ReaderImageInTar
+from .reader_hfds_disk import ReaderHfdsDisk
 
 
 def create_reader(
@@ -37,6 +38,10 @@ def create_reader(
         from .reader_wds import ReaderWds
         kwargs.pop('download', False)
         reader = ReaderWds(root=root, name=name, split=split, **kwargs)
+    elif name.startswith('hfds-disk'):
+        path = name.split(':', 1)[1] if ':' in name else name.split('/', 1)[1]
+        return ReaderHfdsDisk(root=path, split=split, **kwargs)
+        
     else:
         assert os.path.exists(root)
         # default fallback path (backwards compat), use image tar if root is a .tar file, otherwise image folder
@@ -46,3 +51,7 @@ def create_reader(
         else:
             reader = ReaderImageFolder(root, **kwargs)
     return reader
+
+
+
+    
