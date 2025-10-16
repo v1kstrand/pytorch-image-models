@@ -734,6 +734,7 @@ def main():
 
     dataset_eval = None
     if args.val_split:
+        print(1)
         dataset_eval = create_dataset(
             args.dataset,
             root=args.data_dir,
@@ -748,6 +749,7 @@ def main():
             num_samples=args.val_num_samples,
             trust_remote_code=args.dataset_trust_remote_code,
         )
+        print(2)
 
     # create data loaders w/ augmentation pipeline
     train_interpolation = args.train_interpolation
