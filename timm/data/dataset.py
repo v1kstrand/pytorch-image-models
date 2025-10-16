@@ -46,7 +46,6 @@ class ImageDataset(data.Dataset):
                 additional_features=additional_features,
                 **kwargs,
             )
-        print(split, 2)
         self.reader = reader
         self.load_bytes = load_bytes
         self.input_img_mode = input_img_mode
