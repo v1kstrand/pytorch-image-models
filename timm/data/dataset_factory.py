@@ -215,15 +215,9 @@ def create_dataset(
             **kwargs
         )
     else:
-        print(root, split)
-        if search_split and os.path.isdir(root):
-            # look for split specific sub-folder in root
-            root = _search_split(root, split)
-        print(root, split)
-            
-        
         ds = ImageDataset(
             root,
+            split=split,
             reader=name,
             class_map=class_map,
             load_bytes=load_bytes,
