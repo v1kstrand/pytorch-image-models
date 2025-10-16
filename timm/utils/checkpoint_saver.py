@@ -32,7 +32,7 @@ class CheckpointSaver:
             checkpoint_dir='',
             recovery_dir='',
             decreasing=False,
-            max_history=3,
+            max_history=1,
             unwrap_fn=unwrap_model
     ):
 
