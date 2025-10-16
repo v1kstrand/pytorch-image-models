@@ -1022,16 +1022,6 @@ def main():
                 dataset_train.set_epoch(epoch)
             elif args.distributed and hasattr(loader_train.sampler, 'set_epoch'):
                 loader_train.sampler.set_epoch(epoch)
-                
-            eval_metrics = validate(
-                    model,
-                    loader_eval,
-                    validate_loss_fn,
-                    args,
-                    device=device,
-                    amp_autocast=amp_autocast,
-                    model_dtype=model_dtype,
-                )
 
             train_metrics = train_one_epoch(
                 epoch,
