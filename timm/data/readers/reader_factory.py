@@ -42,13 +42,14 @@ def create_reader(
         return ReaderHfdsDisk(root=name, split=split, **kwargs)
         
     else:
-        assert os.path.exists(root)
-        # default fallback path (backwards compat), use image tar if root is a .tar file, otherwise image folder
+        root_split = os.path.join(root, split)
+        assert os.path.exists(root_split)
+        # default fallback path (backwards compat), use image tar if root_split is a .tar file, otherwise image folder
         # FIXME support split here or in reader?
-        if os.path.isfile(root) and os.path.splitext(root)[1] == '.tar':
-            reader = ReaderImageInTar(root, **kwargs)
+        if os.path.isfile(root_split) and os.path.splitext(root_split)[1] == '.tar':
+            reader = ReaderImageInTar(root_split, **kwargs)
         else:
-            reader = ReaderImageFolder(root, **kwargs)
+            reader = ReaderImageFolder(root_split, **kwargs)
     return reader
 
 
