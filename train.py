@@ -1106,7 +1106,7 @@ def main():
             else:
                 latest_metric = train_metrics[eval_metric]
 
-            if saver is not None:
+            if saver is not None and False:
                 # save proper checkpoint with eval metric
                 best_metric, best_epoch = saver.save_checkpoint(epoch, metric=latest_metric)
 
