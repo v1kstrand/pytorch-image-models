@@ -60,8 +60,6 @@ class ReaderHfdsDisk:
                 split_norm = "test"
         if split_norm not in dsd:
             raise KeyError(f"Split '{split}' not found in saved dataset. Available: {list(dsd.keys())}")
-
-        print(split_norm, dsd.keys(), len(dsd[split_norm]))
         self.ds = dsd[split_norm]
 
     def __len__(self) -> int:
