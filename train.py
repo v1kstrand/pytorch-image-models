@@ -734,7 +734,6 @@ def main():
 
     dataset_eval = None
     if args.val_split:
-        print(1)
         dataset_eval = create_dataset(
             args.dataset,
             root=args.data_dir,
@@ -749,7 +748,6 @@ def main():
             num_samples=args.val_num_samples,
             trust_remote_code=args.dataset_trust_remote_code,
         )
-        print(2)
 
     # create data loaders w/ augmentation pipeline
     train_interpolation = args.train_interpolation
@@ -1024,6 +1022,16 @@ def main():
                 dataset_train.set_epoch(epoch)
             elif args.distributed and hasattr(loader_train.sampler, 'set_epoch'):
                 loader_train.sampler.set_epoch(epoch)
+                
+            eval_metrics = validate(
+                    model,
+                    loader_eval,
+                    validate_loss_fn,
+                    args,
+                    device=device,
+                    amp_autocast=amp_autocast,
+                    model_dtype=model_dtype,
+                )
 
             train_metrics = train_one_epoch(
                 epoch,

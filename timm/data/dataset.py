@@ -36,7 +36,6 @@ class ImageDataset(data.Dataset):
             additional_features=None,
             **kwargs,
     ):
-        print(split)
         if reader is None or isinstance(reader, str):
             reader = create_reader(
                 reader or '',

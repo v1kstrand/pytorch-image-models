@@ -39,9 +39,7 @@ def create_reader(
         kwargs.pop('download', False)
         reader = ReaderWds(root=root, name=name, split=split, **kwargs)
     elif prefix.startswith('hfds-disk'):
-        ds = ReaderHfdsDisk(root=name, split=split, **kwargs)
-        print(333)
-        return ds
+        return ReaderHfdsDisk(root=name, split=split, **kwargs)
     else:
         root_split = os.path.join(root, split)
         assert os.path.exists(root_split)
