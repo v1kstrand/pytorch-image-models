@@ -215,10 +215,13 @@ def create_dataset(
             **kwargs
         )
     else:
-        # FIXME support more advance split cfg for ImageFolder/Tar datasets in the future
+        print(root, split)
         if search_split and os.path.isdir(root):
             # look for split specific sub-folder in root
             root = _search_split(root, split)
+        print(root, split)
+            
+        
         ds = ImageDataset(
             root,
             reader=name,

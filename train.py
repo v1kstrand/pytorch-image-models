@@ -392,11 +392,11 @@ group.add_argument('--recovery-interval', type=int, default=0, metavar='N',
                    help='how many batches to wait before writing recovery checkpoint')
 group.add_argument('--checkpoint-hist', type=int, default=10, metavar='N',
                    help='number of checkpoints to keep (default: 10)')
-group.add_argument('-j', '--workers', type=int, default=4, metavar='N',
+group.add_argument('-j', '--workers', type=int, default=os.cpu_count() - 2, metavar='N',
                    help='how many training processes to use (default: 4)')
 group.add_argument('--save-images', action='store_true', default=False,
                    help='save images of input batches every log interval for debugging')
-group.add_argument('--pin-mem', action='store_true', default=False,
+group.add_argument('--pin-mem', action='store_false', default=True,
                    help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 group.add_argument('--no-prefetcher', action='store_true', default=False,
                    help='disable fast prefetcher')
