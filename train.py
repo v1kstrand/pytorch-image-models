@@ -474,6 +474,7 @@ def main():
             project_name=args.comet_exp_name,
             experiment_key=args.comet_exp_key or None
         )
+        comet_exp.set_name(args.comet_exp_name)
 
     args.prefetcher = not args.no_prefetcher
     args.grad_accum_steps = max(1, args.grad_accum_steps)
