@@ -121,6 +121,10 @@ class CheckpointSaver:
         assert epoch >= 0
         tmp_save_path = os.path.join(self.checkpoint_dir, 'tmp' + self.extension)
         last_save_path = os.path.join(self.checkpoint_dir, 'last' + self.extension)
+        if os.path.exists(last_save_path):
+            prev_save_path = os.path.join(self.checkpoint_dir, 'prev' + self.extension)
+            os.rename(last_save_path, prev_save_path)
+        
         self._save(tmp_save_path, epoch, metric)
         self._replace(tmp_save_path, last_save_path)
         
