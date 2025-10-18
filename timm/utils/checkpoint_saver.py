@@ -129,7 +129,7 @@ class CheckpointSaver:
         self._replace(tmp_save_path, last_save_path)
         
         if self.max_history == -1:
-            return
+            return (None, None)
 
         worst_file = self.checkpoint_files[-1] if self.checkpoint_files else None
         if (
