@@ -162,11 +162,11 @@ group.add_argument('--head-init-bias', default=None, type=float,
                    help='Head initialization bias value')
 group.add_argument('--torchcompile-mode', type=str, default=None,
                     help="torch.compile mode (default: None).")
-group.add_argument('--torchcompile-fullgraph', action='store_true', default=False,
+group.add_argument('--torchcompile-fullgraph', action='store_false', default=True,
                     help="torch.compile fullgraph (default: None).")
-group.add_argument('--torchcompile-dynamic', action='store_false', default=True,
+group.add_argument('--torchcompile-dynamic', action='store_true', default=False,
                     help="torch.compile dynamic (default: None).")
-group.add_argument('--torchcompile-cache-dir', default='', type=str,
+group.add_argument('--torchcompile-cache-dir', default="/notebooks/torchcompile_cache", type=str,
                     help="torch.compile dynamic (default: None).")
 
 
