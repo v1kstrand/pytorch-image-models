@@ -61,7 +61,7 @@ class CheckpointSaver:
         self.cmp = operator.lt if decreasing else operator.gt  # True if lhs better than rhs
         self.max_history = max_history
         self.unwrap_fn = unwrap_fn
-        assert self.max_history >= 1
+        assert self.max_history >= 1 or self.max_history == -1
 
     def _replace(self, src, dst):
         if self.can_hardlink:
@@ -123,6 +123,9 @@ class CheckpointSaver:
         last_save_path = os.path.join(self.checkpoint_dir, 'last' + self.extension)
         self._save(tmp_save_path, epoch, metric)
         self._replace(tmp_save_path, last_save_path)
+        
+        if self.max_history == -1:
+            return
 
         worst_file = self.checkpoint_files[-1] if self.checkpoint_files else None
         if (
