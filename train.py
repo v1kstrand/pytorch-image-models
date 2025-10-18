@@ -172,7 +172,7 @@ group.add_argument('--torchcompile-cache-dir', default="/notebooks/torchcompile_
 
 group.add_argument('--comet-exp-name', default='', type=str,
                     help="torch.compile dynamic (default: None).")
-group.add_argument('--comet-exp-key', default='', type=str,
+group.add_argument('--comet-exp-key', default=None, type=str,
                     help="torch.compile dynamic (default: None).")
 
 #project_name=args.comet_exp_name,
