@@ -456,7 +456,7 @@ def main(override_args=None):
     args, args_text = _parse_args()
     
     for k, v in override_args.items():
-        assert hasattr(args, k)
+        assert hasattr(args, k), f"{k} not found in args"
         assert getattr(args, k) is None or isinstance(v, type(getattr(args, k))), f"{k} must be type {type(getattr(args, k))}"
         setattr(args, k, v)
 
