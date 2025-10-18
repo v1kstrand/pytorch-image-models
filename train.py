@@ -259,7 +259,7 @@ group.add_argument('--lr-k-decay', type=float, default=1.0,
                    help='learning rate k-decay for cosine/poly (default: 1.0)')
 group.add_argument('--warmup-lr', type=float, default=1e-5, metavar='LR',
                    help='warmup learning rate (default: 1e-5)')
-group.add_argument('--min-lr', type=float, default=0, metavar='LR',
+group.add_argument('--min-lr', type=float, default=0., metavar='LR',
                    help='lower lr bound for cyclic schedulers that hit 0 (default: 0)')
 group.add_argument('--epochs', type=int, default=300, metavar='N',
                    help='number of epochs to train (default: 300)')
