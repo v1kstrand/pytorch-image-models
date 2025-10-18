@@ -52,7 +52,6 @@ try:
 except ImportError:
     has_apex = False
 
-
 try:
     import wandb
     has_wandb = True
@@ -438,7 +437,7 @@ def _parse_args():
     # Do we have a config file to parse?
     args_config, remaining = config_parser.parse_known_args()
     if args_config.config:
-        with open(args_config.config, 'r') as f:
+        with open(args_config.config, 'r', encoding='utf-8') as f:
             cfg = yaml.safe_load(f)
             parser.set_defaults(**cfg)
 
@@ -451,9 +450,15 @@ def _parse_args():
     return args, args_text
 
 
-def main():
+def main(override_args=None):
+    override_args = override_args or {}
     utils.setup_default_logging()
     args, args_text = _parse_args()
+    
+    for k, v in override_args.items():
+        assert hasattr(args, k)
+        assert getattr(args, k) is None or isinstance(v, type(getattr(args, k))), f"{k} must be type {type(getattr(args, k))}"
+        setattr(args, k, v)
 
     if args.device_modules:
         for module in args.device_modules:
@@ -1429,3 +1434,4 @@ def validate(
 
 if __name__ == '__main__':
     main()
+
