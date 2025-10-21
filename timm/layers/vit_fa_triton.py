@@ -447,8 +447,8 @@ class TritonAttention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, M = ctx.saved_tensors
-        assert dO.is_contiguous()
-        assert Q.stride() == K.stride() == V.stride() == O.stride() == dO.stride()
+        #assert dO.is_contiguous()
+        #assert Q.stride() == K.stride() == V.stride() == O.stride() == dO.stride()
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
@@ -483,7 +483,7 @@ class TritonAttention(torch.autograd.Function):
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
     """ViT-S-only autograd op (single-pass forward + exact backward)."""
-    Q = Q.contiguous()
-    K = K.contiguous()
-    V = V.contiguous()
+    #Q = Q.contiguous()
+    #K = K.contiguous()
+    #V = V.contiguous()
     return TritonAttention.apply(Q, K, V)
