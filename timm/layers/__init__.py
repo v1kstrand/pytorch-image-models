@@ -1,5 +1,3 @@
-from .vit_fa_triton import SDPA_TRITON_FA
-
 from ._fx import (
     create_feature_extractor,
     get_graph_node_names,
