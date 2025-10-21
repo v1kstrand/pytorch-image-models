@@ -416,18 +416,19 @@ class TritonAttention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V):
         if Q.dim() != 4:
-            raise ValueError(f"Expected 4D tensors [B,H,S,D], got {Q.shape}, {K.shape}, {V.shape}")
+            raise ValueError(f"Expected [B,H,S,D], got {Q.shape}")
         if K.shape != Q.shape or V.shape != Q.shape:
-            raise ValueError(f"Q, K, V must have identical shapes; got {Q.shape}, {K.shape}, {V.shape}")
+            raise ValueError(f"Q,K,V must have identical shapes; got {Q.shape}, {K.shape}, {V.shape}")
         if Q.device != K.device or Q.device != V.device:
-            raise ValueError("Q, K, V must be on the same device")
+            raise ValueError("Q,K,V must be on the same device")
         if Q.dtype != K.dtype or Q.dtype != V.dtype:
-            raise ValueError("Q, K, V must have the same dtype")
+            raise ValueError("Q,K,V must have the same dtype")
+
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
-        assert HEAD_DIM == V.size(-1) == K.size(-1)
-        assert Q.stride(-1) == 1
-        assert Q.stride() == K.stride() == V.stride()
-        assert Q.stride(-2) == Q.size(-1)
+        assert HEAD_DIM == K.size(-1) == V.size(-1)
+
+        # hard requirement for your Triton kernels
+        assert Q.stride(-1) == 1 and K.stride(-1) == 1 and V.stride(-1) == 1  # last-dim contiguous
         comp_torch = _sdpa_comp_dtype(Q)
         comp_triton = _triton_compute_dtype(comp_torch)
         
