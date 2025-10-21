@@ -499,7 +499,7 @@ class SDPA_TRITON_FA(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, **kwargs) -> torch.Tensor:
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
         if Q.dim() != 4:
             raise ValueError(f"Expected 4D tensors [B,H,S,D], got {Q.shape}, {K.shape}, {V.shape}")
         if K.shape != Q.shape or V.shape != Q.shape:
