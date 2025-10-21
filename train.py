@@ -666,6 +666,7 @@ def main(override_args=None):
         base_dir = "/notebooks/output/train"
         cp_path = os.path.join(base_dir, args.experiment, "/last.pth.tar")
         if os.path.exists(cp_path):
+            args.resume = cp_path
             resume_epoch = resume_checkpoint(
                 model,
                 args.resume,
@@ -673,6 +674,9 @@ def main(override_args=None):
                 loss_scaler=None if args.no_resume_opt else loss_scaler,
                 log_info=utils.is_primary(args),
             )
+        else:
+            args.resume = None
+            
 
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
