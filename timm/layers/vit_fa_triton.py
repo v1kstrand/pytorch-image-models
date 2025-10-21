@@ -484,7 +484,7 @@ class TritonAttention(torch.autograd.Function):
         )
         return dQ, dK, dV, None, None
     
-def sdpa_yt_fa(Q: Tensor, K: Tensor, V: Tensor):
+def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
     """ViT-S-only autograd op (single-pass forward + exact backward)."""
     return TritonAttention.apply(Q, K, V)
 

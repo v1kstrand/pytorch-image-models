@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from ._fx import register_notrace_function
 from .config import use_fused_attn
 from .pos_embed_sincos import apply_rot_embed_cat
-from .vit_fa_triton import SDPA_TRITON_FA
+from .vit_fa_triton import sdpa_triton_fa 
 
 
 @torch.fx.wrap
@@ -81,7 +81,7 @@ class Attention(nn.Module):
         q, k = self.q_norm(q), self.k_norm(k)
         
         if True:
-            x = SDPA_TRITON_FA(q, k, v)
+            x = sdpa_triton_fa(q, k, v)
         elif self.fused_attn:
             x = F.scaled_dot_product_attention(
                 q, k, v,
