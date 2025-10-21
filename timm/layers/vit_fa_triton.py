@@ -415,6 +415,14 @@ def _attn_bwd_dq(
 class TritonAttention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V):
+        if Q.dim() != 4:
+            raise ValueError(f"Expected 4D tensors [B,H,S,D], got {Q.shape}, {K.shape}, {V.shape}")
+        if K.shape != Q.shape or V.shape != Q.shape:
+            raise ValueError(f"Q, K, V must have identical shapes; got {Q.shape}, {K.shape}, {V.shape}")
+        if Q.device != K.device or Q.device != V.device:
+            raise ValueError("Q, K, V must be on the same device")
+        if Q.dtype != K.dtype or Q.dtype != V.dtype:
+            raise ValueError("Q, K, V must have the same dtype")
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         assert HEAD_DIM == V.size(-1) == K.size(-1)
         assert Q.is_contiguous()
@@ -487,32 +495,3 @@ class TritonAttention(torch.autograd.Function):
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
     """ViT-S-only autograd op (single-pass forward + exact backward)."""
     return TritonAttention.apply(Q, K, V)
-
-
-class SDPA_TRITON_FA(nn.Module):
-    """
-    Thin nn.Module wrapper around TritonAttention.apply(Q, K, V).
-
-    Expects Q, K, V with shape [B, H, S, D] on the same device/dtype.
-    Returns O with shape [B, H, S, D].
-    """
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-        if Q.dim() != 4:
-            raise ValueError(f"Expected 4D tensors [B,H,S,D], got {Q.shape}, {K.shape}, {V.shape}")
-        if K.shape != Q.shape or V.shape != Q.shape:
-            raise ValueError(f"Q, K, V must have identical shapes; got {Q.shape}, {K.shape}, {V.shape}")
-        if Q.device != K.device or Q.device != V.device:
-            raise ValueError("Q, K, V must be on the same device")
-        if Q.dtype != K.dtype or Q.dtype != V.dtype:
-            raise ValueError("Q, K, V must have the same dtype")
-
-        # Keep last dimension contiguous for clean strides (HEAD_DIM contiguous):
-        if Q.stride(-1) != 1: Q = Q.contiguous()
-        if K.stride(-1) != 1: K = K.contiguous()
-        if V.stride(-1) != 1: V = V.contiguous()
-
-        # Autograd is handled by your TritonAttention Function
-        return TritonAttention.apply(Q, K, V)
