@@ -663,13 +663,16 @@ def main(override_args=None):
     # optionally resume from a checkpoint
     resume_epoch = None
     if args.resume:
-        resume_epoch = resume_checkpoint(
-            model,
-            args.resume,
-            optimizer=None if args.no_resume_opt else optimizer,
-            loss_scaler=None if args.no_resume_opt else loss_scaler,
-            log_info=utils.is_primary(args),
-        )
+        base_dir = "/notebooks/output/train"
+        cp_path = os.path.join(base_dir, args.experiment, "/last.pth.tar")
+        if os.path.exists(cp_path):
+            resume_epoch = resume_checkpoint(
+                model,
+                args.resume,
+                optimizer=None if args.no_resume_opt else optimizer,
+                loss_scaler=None if args.no_resume_opt else loss_scaler,
+                log_info=utils.is_primary(args),
+            )
 
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
