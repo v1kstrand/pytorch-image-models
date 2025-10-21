@@ -119,7 +119,7 @@ group.add_argument('--pretrained-path', default=None, type=str,
                    help='Load this checkpoint as if they were the pretrained weights (with adaptation).')
 group.add_argument('--initial-checkpoint', default='', type=str, metavar='PATH',
                    help='Load this checkpoint into model after initialization (default: none)')
-group.add_argument('--resume', default='', type=str, metavar='PATH',
+group.add_argument('--resume', default=True, action='store_false',
                    help='Resume full model and optimizer state from checkpoint (default: none)')
 group.add_argument('--no-resume-opt', action='store_true', default=False,
                    help='prevent resume of optimizer state when resuming model')
