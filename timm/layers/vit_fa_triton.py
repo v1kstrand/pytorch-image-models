@@ -4,12 +4,11 @@ from torch import nn
 from torch import Tensor
 import triton
 import triton.language as tl
+from torch.nn import functional as F
 
-#GROUP_NM_SWEEP = [2, 4, 8]
-#NUM_STAGES_SWEEP = [3, 4, 7]
-GROUP_NM_SWEEP = [4, 8]
-NUM_STAGES_SWEEP = [4, 7]
-NUM_WARPS_SWEEP = [2, 4]
+GROUP_NM_SWEEP = [2]#, 4, 8]
+NUM_STAGES_SWEEP = [3]#, 4, 7]
+NUM_WARPS_SWEEP = [2]#, 4]
 KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]
 
 def _sdpa_comp_dtype(x: torch.Tensor) -> torch.dtype:
@@ -79,8 +78,8 @@ def _attn_fwd_inner(
             num_stages=num_stages,
             num_warps=num_warps,
         )
-        for BLOCK_Q in [64, 128]
-        for BLOCK_KV in [32, 64]
+        for BLOCK_Q in [64]#, 128]
+        for BLOCK_KV in [32]#, 64]
         for GROUP_M in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -89,10 +88,18 @@ def _attn_fwd_inner(
 )
 @triton.jit
 def _attn_fwd(
-    Q, K, V, softmax_scale, M, O,
-    stride_batch, stride_head, stride_seq, stride_dim,
+    Q, K, V, M, O,
+    # Q strides
+    sqb, sqh, sqs, sqd,
+    # K strides
+    skb, skh, sks, skd,
+    # V strides
+    svb, svh, svs, svd,
+    # dO strides
+    sob, soh, sos, sod,
+    # dK strides
     BATCH_SIZE, NUM_HEADS: tl.constexpr, SEQ_LEN: tl.constexpr, HEAD_DIM: tl.constexpr,
-    BLOCK_Q: tl.constexpr, BLOCK_KV: tl.constexpr, DTYPE: tl.constexpr,
+    softmax_scale:tl.constexpr, BLOCK_Q: tl.constexpr, BLOCK_KV: tl.constexpr, DTYPE: tl.constexpr,
     GROUP_M: tl.constexpr,
 ):
     tl.static_assert(BLOCK_KV <= HEAD_DIM)
@@ -114,24 +121,26 @@ def _attn_fwd(
     if start_q >= SEQ_LEN:
         return
 
-    index_batch = pid_bh // NUM_HEADS
-    index_head  = pid_bh %  NUM_HEADS
+    b = pid_bh // NUM_HEADS
+    h  = pid_bh %  NUM_HEADS
 
-    off_bh = (index_batch.to(tl.int64) * stride_batch
-              + index_head.to(tl.int64) * stride_head)
+    off_bh_k  = (b * skb   + h * skh  ).to(tl.int64)
+    off_bh_v  = (b * svb   + h * svh  ).to(tl.int64)
+    off_bh_q  = (b * sqb   + h * sqh  ).to(tl.int64)
+    off_bh_o = (b * sob   + h * soh  ).to(tl.int64)
     
     # --- block pointers ---
     Q_block_ptr = tl.make_block_ptr(
-        Q + off_bh, (SEQ_LEN, HEAD_DIM), (stride_seq, stride_dim), (start_q, 0), (BLOCK_Q, HEAD_DIM), (1, 0)
+        Q + off_bh_q, (SEQ_LEN, HEAD_DIM), (sqs, sqd), (start_q, 0), (BLOCK_Q, HEAD_DIM), (1, 0)
     )
     V_block_ptr = tl.make_block_ptr(
-        V + off_bh, (SEQ_LEN, HEAD_DIM), (stride_seq, stride_dim), (0, 0), (BLOCK_KV, HEAD_DIM), (1, 0)
+        V + off_bh_v, (SEQ_LEN, HEAD_DIM), (svs, svd), (0, 0), (BLOCK_KV, HEAD_DIM), (1, 0)
     )
     K_block_ptr = tl.make_block_ptr(
-        K + off_bh, (HEAD_DIM, SEQ_LEN), (stride_dim, stride_seq), (0, 0), (HEAD_DIM, BLOCK_KV), (0, 1)
+        K + off_bh_k, (HEAD_DIM, SEQ_LEN), (skd, sks), (0, 0), (HEAD_DIM, BLOCK_KV), (0, 1)
     )
     O_block_ptr = tl.make_block_ptr(
-        O + off_bh, (SEQ_LEN, HEAD_DIM), (stride_seq, stride_dim), (start_q, 0), (BLOCK_Q, HEAD_DIM), (1, 0)
+        O + off_bh_o, (SEQ_LEN, HEAD_DIM), (sos, sod), (start_q, 0), (BLOCK_Q, HEAD_DIM), (1, 0)
     )
 
     offs_q  = start_q + tl.arange(0, BLOCK_Q)
@@ -139,7 +148,7 @@ def _attn_fwd(
 
     # --- per-row running stats + output tile ---
     m_i = tl.full((BLOCK_Q,), -float("inf"), dtype=tl.float32)
-    l_i = tl.full((BLOCK_Q,),  1.0,          dtype=tl.float32)
+    l_i = tl.full((BLOCK_Q,),  1,          dtype=tl.float32)
     O_block = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
     Q_block = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
@@ -151,52 +160,51 @@ def _attn_fwd(
     )
 
     # --- write back: store log-sum-exp (for bwd) and O ---
-    m_i += tl.math.log(l_i)
+    m_i += tl.math.log(l_i + 1e-20)
     m_ptrs = M + pid_bh * SEQ_LEN + offs_q
     tl.store(m_ptrs, m_i, mask=offs_q < SEQ_LEN)
     tl.store(O_block_ptr, O_block.to(O.type.element_ty), boundary_check=(0, 1))
 
 @triton.autotune(
-    [
-        triton.Config(
-            {"BLOCK_Q": BLOCK_Q},
-            num_stages=num_stages,
-            num_warps=num_warps,
-        )
-        for BLOCK_Q in [32, 64, 128]
-        for num_stages in NUM_STAGES_SWEEP
-        for num_warps in NUM_WARPS_SWEEP
-    ],
+    [triton.Config({"BLOCK_Q": bq}, num_stages=ns, num_warps=nw)
+     for bq in [32, 64, 128]
+     for ns in NUM_STAGES_SWEEP
+     for nw in NUM_WARPS_SWEEP],
     key=KEY_CACHE,
 )
 @triton.jit
 def _attn_bwd_preprocess(
-    O, dO, D, SEQ_LEN,
+    O, dO, D,
+    stride_batch, stride_head, stride_seq, stride_dim,
+    NUM_HEADS: tl.constexpr, SEQ_LEN: tl.constexpr,
     BLOCK_Q: tl.constexpr, HEAD_DIM: tl.constexpr,
 ):
-    block_index_q = tl.program_id(0)
-    start_q = block_index_q * BLOCK_Q
+    pid_q  = tl.program_id(0)                          # Q-tile id
+    pid_bh = tl.program_id(1)                          # packed (batch, head)
+    start_q = pid_q * BLOCK_Q
     if start_q >= SEQ_LEN:
         return
 
-    offs_q  = start_q + tl.arange(0, BLOCK_Q)
-    index_batch_head = tl.program_id(1)
-    offs_dim = tl.arange(0, HEAD_DIM)
-    mask_qd = offs_q[:, None] < SEQ_LEN
+    b = pid_bh // NUM_HEADS
+    h = pid_bh %  NUM_HEADS
+    off_bh = (b * stride_batch + h * stride_head).to(tl.int64)
 
-    O_block = tl.load(
-        O + index_batch_head * HEAD_DIM * SEQ_LEN
-        + offs_q[:, None] * HEAD_DIM + offs_dim[None, :],
-        mask=mask_qd, other=0
+    # use block_ptr so arbitrary strides are OK
+    O_blk = tl.make_block_ptr(
+        O + off_bh, (SEQ_LEN, HEAD_DIM), (stride_seq, stride_dim),
+        (start_q, 0), (BLOCK_Q, HEAD_DIM), (1, 0)
     )
-    dO_block = tl.load(
-        dO + index_batch_head * HEAD_DIM * SEQ_LEN
-        + offs_q[:, None] * HEAD_DIM + offs_dim[None, :],
-        mask=mask_qd, other=0
-    ).to(tl.float32)
+    dO_blk = tl.make_block_ptr(
+        dO + off_bh, (SEQ_LEN, HEAD_DIM), (stride_seq, stride_dim),
+        (start_q, 0), (BLOCK_Q, HEAD_DIM), (1, 0)
+    )
 
-    D_block = tl.sum(dO_block * O_block, axis=1)
-    tl.store(D + index_batch_head * SEQ_LEN + offs_q, D_block, mask=offs_q < SEQ_LEN)
+    O_block  = tl.load(O_blk,  boundary_check=(0, 1), padding_option="zero").to(tl.float32)
+    dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(tl.float32)
+    D_block  = tl.sum(dO_block * O_block, axis=1)
+
+    offs_q = start_q + tl.arange(0, BLOCK_Q)
+    tl.store(D + pid_bh * SEQ_LEN + offs_q, D_block, mask=offs_q < SEQ_LEN)
 
 
 @triton.autotune(
@@ -206,8 +214,8 @@ def _attn_bwd_preprocess(
             num_stages=num_stages,
             num_warps=num_warps,
         )
-        for BLOCK_Q in [32, 64]
-        for BLOCK_KV in [64, 128]
+        for BLOCK_Q in [32]#, 64]
+        for BLOCK_KV in [64]#, 128]
         for GROUP_N in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -216,10 +224,21 @@ def _attn_bwd_preprocess(
 )
 @triton.jit
 def _attn_bwd_dk_dv(
-    Q, K, V, softmax_scale, dO, dQ, dK, dV, M, D,
-    stride_batch, stride_head, stride_seq, stride_dim,
+    Q, K, V, dO, dK, dV, M, D,
+    # Q strides
+    sqb, sqh, sqs, sqd,
+    # K strides
+    skb, skh, sks, skd,
+    # V strides
+    svb, svh, svs, svd,
+    # dO strides
+    sob, soh, sos, sod,
+    # dK strides
+    s_dkb, s_dkh, s_dks, s_dkd,
+    # dV strides
+    s_dvb, s_dvh, s_dvs, s_dvd,
     NUM_HEADS, SEQ_LEN,
-    BLOCK_Q: tl.constexpr, BLOCK_KV: tl.constexpr, 
+    BLOCK_Q: tl.constexpr, BLOCK_KV: tl.constexpr, softmax_scale: tl.constexpr,
     HEAD_DIM: tl.constexpr, DTYPE: tl.constexpr, GROUP_N: tl.constexpr
 ):
     # --- program ids ---
@@ -229,7 +248,6 @@ def _attn_bwd_dk_dv(
     h = pid_bh %  NUM_HEADS
 
     # --- base offsets for this (batch, head) slice ---
-    off_bh     = (stride_batch * b + stride_head * h).to(tl.int64)
     off_bh_seq = (pid_bh * SEQ_LEN).to(tl.int64)
     M  += off_bh_seq
     D  += off_bh_seq
@@ -239,6 +257,7 @@ def _attn_bwd_dk_dv(
     group_start  = group_id * GROUP_N
     if group_start >= num_tiles_kv:
         return
+    
     tiles_in_this = tl.minimum(GROUP_N, num_tiles_kv - group_start)
     kv_in_grp     = pid_kv - group_start
     kv_eff        = kv_in_grp % tiles_in_this
@@ -249,24 +268,31 @@ def _attn_bwd_dk_dv(
     if start_kv >= SEQ_LEN:
         return
 
+    off_bh_k  = (b * skb   + h * skh  ).to(tl.int64)
+    off_bh_v  = (b * svb   + h * svh  ).to(tl.int64)
+    off_bh_dk = (b * s_dkb + h * s_dkh).to(tl.int64)
+    off_bh_dv = (b * s_dvb + h * s_dvh).to(tl.int64)
+    off_bh_q  = (b * sqb   + h * sqh  ).to(tl.int64)
+    off_bh_do = (b * sob   + h * soh  ).to(tl.int64)
+    
     offs_kv  = start_kv + tl.arange(0, BLOCK_KV)  # absolute KV indices for this tile
     K_blk = tl.make_block_ptr( 
-        K + off_bh, (HEAD_DIM, SEQ_LEN), (stride_dim, stride_seq), (0, start_kv), (HEAD_DIM, BLOCK_KV), (0, 1)
+        K + off_bh_k, (HEAD_DIM, SEQ_LEN), (sks, skd),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
     ) # base,        shape,               strides,                  offsets,       block_shape,          order
     V_blk = tl.make_block_ptr( 
-        V + off_bh,(SEQ_LEN, HEAD_DIM),(stride_seq, stride_dim),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
+        V + off_bh_v,(SEQ_LEN, HEAD_DIM),(svs, svd),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
     )
     dK_blk = tl.make_block_ptr( 
-        dK + off_bh, (SEQ_LEN, HEAD_DIM), (stride_seq, stride_dim), (start_kv, 0), (BLOCK_KV, HEAD_DIM), (1, 0)
+        dK + off_bh_dk, (SEQ_LEN, HEAD_DIM), (s_dks, s_dkd), (start_kv, 0), (BLOCK_KV, HEAD_DIM), (1, 0)
     )
     dV_blk = tl.make_block_ptr( 
-        dV + off_bh,(SEQ_LEN, HEAD_DIM),(stride_seq, stride_dim),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
+        dV + off_bh_dv,(SEQ_LEN, HEAD_DIM),(s_dvs, s_dvd),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
     )
-    qT_blk = tl.make_block_ptr( 
-        Q + off_bh,(HEAD_DIM, SEQ_LEN),(stride_dim, stride_seq),(0, 0),(HEAD_DIM, BLOCK_Q),(0, 1)
+    Q_T_blk = tl.make_block_ptr( 
+        Q + off_bh_q,(HEAD_DIM, SEQ_LEN),(sqd, sqs),(0, 0),(HEAD_DIM, BLOCK_Q),(0, 1)
     )
     dO_blk = tl.make_block_ptr( 
-        dO + off_bh,(SEQ_LEN, HEAD_DIM),(stride_seq, stride_dim),(0, 0),(BLOCK_Q, HEAD_DIM),(1, 0)
+        dO + off_bh_do,(SEQ_LEN, HEAD_DIM),(sos, sod),(0, 0),(BLOCK_Q, HEAD_DIM),(1, 0)
     )
 
     dV_acc = tl.zeros((BLOCK_KV, HEAD_DIM), dtype=tl.float32)
@@ -278,7 +304,7 @@ def _attn_bwd_dk_dv(
     # Loop over Q tiles
     num_steps = tl.cdiv(SEQ_LEN, BLOCK_Q)
     for qi in range(0, num_steps):
-        qT_block = tl.load(qT_blk, boundary_check=(0, 1), padding_option="zero")
+        qT_block = tl.load(Q_T_blk, boundary_check=(0, 1), padding_option="zero")
         dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero")
         start_q = qi * BLOCK_Q
         offs_q  = start_q + tl.arange(0, BLOCK_Q)
@@ -299,7 +325,7 @@ def _attn_bwd_dk_dv(
         dS_T = (P_T * (dpT - Di[None, :])).to(DTYPE)
         dK_acc = tl.dot(dS_T, tl.trans(qT_block.to(DTYPE)), dK_acc)
 
-        qT_blk = tl.advance(qT_blk, (0, BLOCK_Q))
+        Q_T_blk = tl.advance(Q_T_blk, (0, BLOCK_Q))
         dO_blk = tl.advance(dO_blk, (BLOCK_Q, 0))
 
     # Tail-safe stores
@@ -315,8 +341,8 @@ def _attn_bwd_dk_dv(
             num_stages=num_stages,
             num_warps=num_warps,
         )
-        for BLOCK_Q in [64, 128]
-        for BLOCK_KV in [32, 64]
+        for BLOCK_Q in [64]#, 128]
+        for BLOCK_KV in [32]#, 64]
         for GROUP_N in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -325,18 +351,26 @@ def _attn_bwd_dk_dv(
 )
 @triton.jit
 def _attn_bwd_dq(
-    Q, K, V, softmax_scale, dO, dQ, dK, dV, M, D,
-    stride_batch, stride_head, stride_seq, stride_dim,
+    Q, K, V, dO, dQ, M, D,
+    # Q strides
+    sqb, sqh, sqs, sqd,
+    # K strides
+    skb, skh, sks, skd,
+    # V strides
+    svb, svh, svs, svd,
+    # dO strides
+    sob, soh, sos, sod,
+    # dK strides
+    s_dqb, s_dqh, s_dqs, s_dqd,
     NUM_HEADS, SEQ_LEN,
     BLOCK_Q: tl.constexpr, BLOCK_KV: tl.constexpr, 
     HEAD_DIM: tl.constexpr, DTYPE: tl.constexpr,
-    GROUP_N: tl.constexpr,                       # <-- added
+    GROUP_N: tl.constexpr, softmax_scale: tl.constexpr,
 ):
     pid_bh = tl.program_id(1)
     b = pid_bh // NUM_HEADS
     h = pid_bh %  NUM_HEADS
     
-    off_bh = (stride_batch * b + stride_head * h).to(tl.int64)
     off_bh_seq = (pid_bh * SEQ_LEN).to(tl.int64)
     M += off_bh_seq
     D += off_bh_seq
@@ -359,21 +393,26 @@ def _attn_bwd_dq(
     if start_q >= SEQ_LEN:
         return
     
+    off_bh_k  = (b * skb   + h * skh  ).to(tl.int64)
+    off_bh_v  = (b * svb   + h * svh  ).to(tl.int64)
+    off_bh_dq = (b * s_dqb + h * s_dqh).to(tl.int64)
+    off_bh_q  = (b * sqb   + h * sqh  ).to(tl.int64)
+    off_bh_do = (b * sob   + h * soh  ).to(tl.int64)
     # ---------- block pointers ----------
     Q_blk = tl.make_block_ptr(
-        Q + off_bh,(SEQ_LEN, HEAD_DIM),(stride_seq, stride_dim),(start_q, 0),(BLOCK_Q, HEAD_DIM),(1, 0),
+        Q + off_bh_q,(SEQ_LEN, HEAD_DIM),(sqs, sqd),(start_q, 0),(BLOCK_Q, HEAD_DIM),(1, 0),
     )
     dO_blk = tl.make_block_ptr(
-        dO + off_bh,(SEQ_LEN, HEAD_DIM),(stride_seq, stride_dim),(start_q, 0),(BLOCK_Q, HEAD_DIM),(1, 0),
+        dO + off_bh_do,(SEQ_LEN, HEAD_DIM),(sos, sod),(start_q, 0),(BLOCK_Q, HEAD_DIM),(1, 0),
     )
     K_T_blk = tl.make_block_ptr(
-        K + off_bh,(HEAD_DIM, SEQ_LEN),(stride_dim, stride_seq),(0, 0),(HEAD_DIM, BLOCK_KV),(0, 1),
+        K + off_bh_k,(HEAD_DIM, SEQ_LEN),(skd, sks),(0, 0),(HEAD_DIM, BLOCK_KV),(0, 1),
     )
     V_T_blk = tl.make_block_ptr(
-        V + off_bh,(HEAD_DIM, SEQ_LEN),(stride_dim, stride_seq),(0, 0),(HEAD_DIM, BLOCK_KV),(0, 1),
+        V + off_bh_v,(HEAD_DIM, SEQ_LEN),(svd, svs),(0, 0),(HEAD_DIM, BLOCK_KV),(0, 1),
     )
     dQ_blk = tl.make_block_ptr(
-        dQ + off_bh,(SEQ_LEN, HEAD_DIM),(stride_seq, stride_dim),(start_q, 0),(BLOCK_Q, HEAD_DIM),(1, 0),
+        dQ + off_bh_dq,(SEQ_LEN, HEAD_DIM),(s_dqs, s_dqd),(start_q, 0),(BLOCK_Q, HEAD_DIM),(1, 0),
     )
 
     # ---------- indices & constants ----------
@@ -433,10 +472,10 @@ class TritonAttention(torch.autograd.Function):
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         )
         _attn_fwd[grid](
-            Q=Q, K=K, V=V, softmax_scale=softmax_scale, M=M, O=O,
-            stride_batch=Q.stride(0), stride_head=Q.stride(1), stride_seq=Q.stride(2), stride_dim=Q.stride(3),
-            BATCH_SIZE=Q.shape[0], NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM,
-            DTYPE=comp_triton,
+            Q, K, V, M, O,
+            *Q.stride(), *K.stride(), *V.stride(), *O.stride(),
+            BATCH_SIZE=Q.shape[0], NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM, 
+            softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
 
         ctx.save_for_backward(Q, K, V, O, M)
@@ -449,7 +488,7 @@ class TritonAttention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, M = ctx.saved_tensors
-        dO = dO.contiguous()
+        #dO = dO.contiguous()
         #assert dO.is_contiguous()
         #assert Q.stride() == K.stride() == V.stride() == O.stride() == dO.stride()
         dQ = torch.empty_like(Q)
@@ -463,33 +502,29 @@ class TritonAttention(torch.autograd.Function):
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
-            O=O, dO=dO, D=D, SEQ_LEN=SEQ_LEN,
-            HEAD_DIM=ctx.HEAD_DIM,
+            O, dO, D, 
+            *Q.stride(),
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM,
         )
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
         # Fix KV and iterate through all the Q blocks
         _attn_bwd_dk_dv[dkdv_grid](
-            Q=Q, K=K, V=V, softmax_scale=ctx.softmax_scale,
-            dO=dO, dQ=dQ, dK=dK, dV=dV, M=M, D=D,
-            stride_batch=Q.stride(0), stride_head=Q.stride(1), stride_seq=Q.stride(2), stride_dim=Q.stride(3),
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM, DTYPE=ctx.comp_triton,
+            Q, K, V, dO, dK, dV, M, D,
+            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
+            *dK.stride(), *dV.stride(),
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM, DTYPE=ctx.comp_triton, 
+            softmax_scale=ctx.softmax_scale
         )
 
         # Fix Q and iterate through all the KV block
         dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                     BATCH_SIZE * NUM_HEADS)
         _attn_bwd_dq[dq_grid](
-            Q=Q, K=K, V=V, softmax_scale=ctx.softmax_scale,
-            dO=dO, dQ=dQ, dK=dK, dV=dV, M=M, D=D,
-            stride_batch=Q.stride(0), stride_head=Q.stride(1), stride_seq=Q.stride(2), stride_dim=Q.stride(3),
+            Q, K, V, dO, dQ, M, D,
+            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
+            *dQ.stride(), 
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM, DTYPE=ctx.comp_triton,
+            softmax_scale=ctx.softmax_scale
         )
         return dQ, dK, dV, None, None
-    
-def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
-    """ViT-S-only autograd op (single-pass forward + exact backward)."""
-    #Q = Q.contiguous()
-    #K = K.contiguous()
-    #V = V.contiguous()
-    return TritonAttention.apply(Q, K, V)
