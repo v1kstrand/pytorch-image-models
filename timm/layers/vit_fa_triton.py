@@ -528,3 +528,11 @@ class TritonAttention(torch.autograd.Function):
             softmax_scale=ctx.softmax_scale
         )
         return dQ, dK, dV, None, None
+    
+        
+def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
+    """ViT-S-only autograd op (single-pass forward + exact backward)."""
+    #Q = Q.contiguous()
+    #K = K.contiguous()
+    #V = V.contiguous()
+    return TritonAttention.apply(Q, K, V)
