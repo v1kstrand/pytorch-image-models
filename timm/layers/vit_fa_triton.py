@@ -1,10 +1,8 @@
 
 import torch
-from torch import nn
 from torch import Tensor
 import triton
 import triton.language as tl
-from torch.nn import functional as F
 
 GROUP_NM_SWEEP = [4, 8]
 NUM_STAGES_SWEEP = [3, 5, 7]
@@ -25,16 +23,10 @@ def _triton_compute_dtype(dtype: torch.dtype):
 
 @triton.jit
 def _attn_fwd_inner(
-    O_block,
-    l_i,
-    m_i,
-    Q_block,
-    K_block_ptr,
-    V_block_ptr,
-    softmax_scale,
-    BLOCK_KV: tl.constexpr,
-    SEQ_LEN: tl.constexpr,
-    DTYPE: tl.constexpr,
+    O_block, l_i, m_i, Q_block,
+    K_block_ptr, V_block_ptr,
+    softmax_scale: tl.constexpr, BLOCK_KV: tl.constexpr,
+    SEQ_LEN: tl.constexpr, DTYPE: tl.constexpr,
 ):
     s = tl.full([1], softmax_scale, dtype=DTYPE)
     Q_block = Q_block * s
@@ -96,8 +88,8 @@ def _attn_fwd(
     sob, soh, sos, sod,
     # dK strides
     NUM_HEADS: tl.constexpr, SEQ_LEN: tl.constexpr, HEAD_DIM: tl.constexpr,
-    softmax_scale:tl.constexpr, BLOCK_Q: tl.constexpr, BLOCK_KV: tl.constexpr, DTYPE: tl.constexpr,
-    GROUP_M: tl.constexpr,
+    softmax_scale:tl.constexpr, BLOCK_Q: tl.constexpr, BLOCK_KV: tl.constexpr, 
+    DTYPE: tl.constexpr, GROUP_M: tl.constexpr,
 ):
     tl.static_assert(BLOCK_KV <= HEAD_DIM)
 
@@ -139,7 +131,6 @@ def _attn_fwd(
     O_block_ptr = tl.make_block_ptr(
         O + off_bh_o, (SEQ_LEN, HEAD_DIM), (sos, sod), (start_q, 0), (BLOCK_Q, HEAD_DIM), (1, 0)
     )
-    
 
     # --- per-row running stats + output tile ---
     m_i = tl.full((BLOCK_Q,), -float("inf"), dtype=tl.float32)
