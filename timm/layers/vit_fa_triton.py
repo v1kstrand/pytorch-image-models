@@ -6,9 +6,9 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 
-GROUP_NM_SWEEP = [2]#, 4, 8]
-NUM_STAGES_SWEEP = [3]#, 4, 7]
-NUM_WARPS_SWEEP = [2]#, 4]
+GROUP_NM_SWEEP = [4, 8]
+NUM_STAGES_SWEEP = [3, 5, 7]
+NUM_WARPS_SWEEP = [2, 4, 6]
 KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]
 
 def _sdpa_comp_dtype(x: torch.Tensor) -> torch.dtype:
