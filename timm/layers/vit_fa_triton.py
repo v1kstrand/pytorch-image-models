@@ -67,8 +67,8 @@ def _attn_fwd_inner(
             num_stages=num_stages,
             num_warps=num_warps,
         )
-        for BLOCK_Q in [64]#, 128]
-        for BLOCK_KV in [32]#, 64]
+        for BLOCK_Q in [64, 128]
+        for BLOCK_KV in [32, 64]
         for GROUP_M in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
