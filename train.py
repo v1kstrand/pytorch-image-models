@@ -449,7 +449,7 @@ def main(override_args=None):
     override_args = override_args or {}
     utils.setup_default_logging()
     args, args_text = _parse_args()
-    print(args_text)
+    print(args.__dict__)
     
     for k, v in override_args.items():
         print(f"Setting {k} to {v}")
