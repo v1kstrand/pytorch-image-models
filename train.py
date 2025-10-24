@@ -672,7 +672,7 @@ def main(override_args=None):
     # optionally resume from a checkpoint
     resume_epoch = None
     if args.resume: 
-        cp_path = os.path.join(args.base_dir, args.experiment, "/last.pth.tar")
+        cp_path = os.path.join(exp_dir, "last.pth.tar")
         if os.path.exists(cp_path):
             args.resume = cp_path
             resume_epoch = resume_checkpoint(
