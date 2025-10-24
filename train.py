@@ -166,7 +166,7 @@ group.add_argument('--torchcompile-fullgraph', action='store_false', default=Tru
                     help="torch.compile fullgraph (default: None).")
 group.add_argument('--torchcompile-dynamic', action='store_true', default=False,
                     help="torch.compile dynamic (default: None).")
-group.add_argument('--torchcompile-cache-dir', default="/notebooks/torchcompile_cache", type=str,
+group.add_argument('--torchcompile-cache-dir', default="", type=str,
                     help="torch.compile dynamic (default: None).")
 
 
@@ -432,6 +432,9 @@ group.add_argument('--return-model', action='store_true', default=False,
                    help='returns the model directly after loading')
 
 
+group.add_argument('--base-dir', default='"/notebooks/output/train"', type=str)
+
+
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -452,6 +455,8 @@ def main(override_args=None):
         assert hasattr(args, k), f"{k} not found in args"
         assert getattr(args, k) is None or isinstance(v, type(getattr(args, k))), f"{k} must be type {type(getattr(args, k))}"
         setattr(args, k, v)
+        
+    exp_dir = os.path.join(args.base_dir, args.experiment)
 
     if args.device_modules:
         for module in args.device_modules:
@@ -461,9 +466,13 @@ def main(override_args=None):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
         
-    if args.torchcompile_cache_dir:
-        assert os.path.isdir(args.torchcompile_cache_dir)
-        os.environ["TORCHINDUCTOR_CACHE_DIR"] = args.torchcompile_cache_dir
+    if args.torchcompile:
+        if not args.torchcompile_cache_dir:
+            compile_cache_dir = os.path.join(exp_dir, "torchcompile_cache")
+        else:
+            assert os.path.exists(args.torchcompile_cache_dir)
+            compile_cache_dir = args.torchcompile_cache_dir
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = compile_cache_dir
     
     comet_exp = None
     if args.comet_exp_name:
@@ -660,9 +669,8 @@ def main(override_args=None):
 
     # optionally resume from a checkpoint
     resume_epoch = None
-    if args.resume:
-        base_dir = "/notebooks/output/train"
-        cp_path = os.path.join(base_dir, args.experiment, "/last.pth.tar")
+    if args.resume: 
+        cp_path = os.path.join(args.base_dir, args.experiment, "/last.pth.tar")
         if os.path.exists(cp_path):
             args.resume = cp_path
             resume_epoch = resume_checkpoint(
