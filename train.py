@@ -459,7 +459,7 @@ def main(override_args=None):
     args, args_text = _parse_args()
     
     for k, v in override_args.items():
-        print(f"Overriding {k} with {v}")
+        print(f"Setting {k} to {v}")
         assert hasattr(args, k), f"{k} not found in args"
         assert getattr(args, k) is None or isinstance(v, type(getattr(args, k))), f"{k} must be type {type(getattr(args, k))}"
         setattr(args, k, v)
@@ -556,7 +556,8 @@ def main(override_args=None):
         **args.model_kwargs,
     )
     
-    if hasattr(args, "return_model") and args.return_model:
+    if args.return_model:
+        print("Returning model")
         return model
     
     if args.head_init_scale is not None:
