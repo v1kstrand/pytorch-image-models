@@ -431,6 +431,9 @@ group.add_argument('--naflex-patch-size-probs', type=float, nargs='+', default=N
                    help='Probabilities for each patch size (must sum to 1.0, uniform if not specified)')
 group.add_argument('--naflex-loss-scale', default='linear', type=str,
                    help='Scale loss (gradient) by batch_size ("none", "sqrt", or "linear")')
+group.add_argument('--return-model', action='store_true', default=False,
+                   help='returns the model directly after loading')
+
 
 
 def _parse_args():
