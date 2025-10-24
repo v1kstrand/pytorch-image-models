@@ -435,8 +435,7 @@ group.add_argument('--return-model', action='store_true', default=False,
 
 def _parse_args():
     # Do we have a config file to parse?
-    args, _ = config_parser.parse_known_args()
-    print(args.__dict__)
+    args, _ = parser.parse_known_args()
 
     # Cache the args as a text string to save them in the output dir later
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
