@@ -175,9 +175,6 @@ group.add_argument('--comet-exp-name', default='', type=str,
 group.add_argument('--comet-exp-key', default=None, type=str,
                     help="torch.compile dynamic (default: None).")
 
-#project_name=args.comet_exp_name,
-#experiment_key=args.comet_exp_key or None
-
 # scripting / codegen
 scripting_group = group.add_mutually_exclusive_group()
 scripting_group.add_argument('--torchscript', dest='torchscript', action='store_true',
@@ -438,15 +435,10 @@ group.add_argument('--return-model', action='store_true', default=False,
 
 def _parse_args():
     # Do we have a config file to parse?
-    args_config, remaining = config_parser.parse_known_args()
-    if args_config.config:
-        with open(args_config.config, 'r', encoding='utf-8') as f:
-            cfg = yaml.safe_load(f)
-            parser.set_defaults(**cfg)
+    args, _ = config_parser.parse_known_args()
 
     # The main arg parser parses the rest of the args, the usual
     # defaults will have been overridden if config file specified.
-    args = parser.parse_args(remaining)
 
     # Cache the args as a text string to save them in the output dir later
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
