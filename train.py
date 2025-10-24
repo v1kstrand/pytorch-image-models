@@ -469,6 +469,7 @@ def main(override_args=None):
     if args.torchcompile:
         if not args.torchcompile_cache_dir:
             compile_cache_dir = os.path.join(exp_dir, "torchcompile_cache")
+            os.makedirs(compile_cache_dir, exist_ok=True)
         else:
             assert os.path.exists(args.torchcompile_cache_dir)
             compile_cache_dir = args.torchcompile_cache_dir
