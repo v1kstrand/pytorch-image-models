@@ -551,6 +551,10 @@ def main(override_args=None):
         **factory_kwargs,
         **args.model_kwargs,
     )
+    
+    if hasattr(args, "return_model") and args.return_model:
+        return model
+    
     if args.head_init_scale is not None:
         with torch.no_grad():
             model.get_classifier().weight.mul_(args.head_init_scale)
