@@ -436,9 +436,7 @@ group.add_argument('--return-model', action='store_true', default=False,
 def _parse_args():
     # Do we have a config file to parse?
     args, _ = config_parser.parse_known_args()
-
-    # The main arg parser parses the rest of the args, the usual
-    # defaults will have been overridden if config file specified.
+    print(args.__dict__)
 
     # Cache the args as a text string to save them in the output dir later
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
@@ -449,7 +447,6 @@ def main(override_args=None):
     override_args = override_args or {}
     utils.setup_default_logging()
     args, args_text = _parse_args()
-    print(args.__dict__)
     
     for k, v in override_args.items():
         print(f"Setting {k} to {v}")
