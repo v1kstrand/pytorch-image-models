@@ -473,6 +473,7 @@ def main(override_args=None):
         else:
             assert os.path.exists(args.torchcompile_cache_dir)
             compile_cache_dir = args.torchcompile_cache_dir
+        print(f"Saving torchcompile cache to {compile_cache_dir}")
         os.environ["TORCHINDUCTOR_CACHE_DIR"] = compile_cache_dir
     
     comet_exp = None
