@@ -432,7 +432,7 @@ group.add_argument('--return-model', action='store_true', default=False,
                    help='returns the model directly after loading')
 
 
-group.add_argument('--base-dir', default='"/notebooks/output/train"', type=str)
+group.add_argument('--base-dir', default="/notebooks/output/train", type=str)
 
 
 
