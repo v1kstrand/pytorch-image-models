@@ -682,7 +682,9 @@ def main(override_args=None):
                 loss_scaler=None if args.no_resume_opt else loss_scaler,
                 log_info=utils.is_primary(args),
             )
+            print(f"Resuming training from checkpoint {args.resume} at epoch {resume_epoch}")
         else:
+            print(f"No checkpoint found at {cp_path}")
             args.resume = None
             
 
