@@ -28,9 +28,8 @@ def _attn_fwd_inner(
     softmax_scale: tl.constexpr, BLOCK_KV: tl.constexpr,
     SEQ_LEN: tl.constexpr, DTYPE: tl.constexpr,
 ):
-    Q_block = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     s = tl.full([1], softmax_scale, dtype=DTYPE)
-    Q_block = Q_block * s
+    Q_block = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s
     offs_kv = tl.arange(0, BLOCK_KV)
     for start_kv in range(0, SEQ_LEN, BLOCK_KV):
         K_block = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
