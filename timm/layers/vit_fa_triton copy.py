@@ -23,35 +23,35 @@ def _triton_compute_dtype(dtype: torch.dtype):
 
 @triton.jit
 def _attn_fwd_inner(
-    O_block, l_i, m_i,
-    Q_block_ptr, K_block_ptr, V_block_ptr,
+    O_block, l_i, m_i, Q_block,
+    K_block_ptr, V_block_ptr,
     softmax_scale: tl.constexpr, BLOCK_KV: tl.constexpr,
     SEQ_LEN: tl.constexpr, DTYPE: tl.constexpr,
 ):
-    Q_block = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     s = tl.full([1], softmax_scale, dtype=DTYPE)
     Q_block = Q_block * s
     offs_kv = tl.arange(0, BLOCK_KV)
     for start_kv in range(0, SEQ_LEN, BLOCK_KV):
-        K_block = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
-        S = tl.dot(Q_block, K_block)
+        K_block = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        S = tl.dot(Q_block, K_block) 
 
         kv_idx  = start_kv + offs_kv
         kv_valid = kv_idx < SEQ_LEN
         S = tl.where(kv_valid[None, :], S, -float("inf"))
 
-        S32 = S.to(tl.float32) 
-        m_ij = tl.maximum(m_i, tl.max(S32, axis=1))
-        P_block = tl.exp(S32 - m_ij[:, None])
+        m_ij = tl.maximum(m_i, tl.max(S, axis=1))
+        P_block = tl.exp(S - m_ij[:, None])
         l_ij = tl.sum(P_block, axis=1)
 
         alpha = tl.exp(m_i - m_ij)
         l_i = l_i * alpha + l_ij
 
-        V_block = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+        V_block = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        P_block = P_block.to(DTYPE)
+        V_block = V_block.to(DTYPE)
 
         O_block = O_block * alpha[:, None]
-        O_block = tl.dot(P_block.to(DTYPE), V_block, O_block)
+        O_block = tl.dot(P_block, V_block, O_block)
 
         m_i = m_ij
         V_block_ptr = tl.advance(V_block_ptr, (BLOCK_KV, 0))
@@ -134,19 +134,20 @@ def _attn_fwd(
 
     # --- per-row running stats + output tile ---
     m_i = tl.full((BLOCK_Q,), -float("inf"), dtype=tl.float32)
-    l_i = tl.full((BLOCK_Q,),  0.0,          dtype=tl.float32)
+    l_i = tl.full((BLOCK_Q,),  1,          dtype=tl.float32)
     O_block = tl.zeros([BLOCK_Q, HEAD_DIM], dtype=tl.float32)
+    Q_block = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
     # --- inner loop over KV tiles (online softmax) ---
     O_block, l_i, m_i = _attn_fwd_inner(
-        O_block, l_i, m_i, 
-        Q_block_ptr, K_block_ptr, V_block_ptr, 
-        softmax_scale, BLOCK_KV, SEQ_LEN, DTYPE
+        O_block, l_i, m_i, Q_block,
+        K_block_ptr, V_block_ptr, softmax_scale,
+        BLOCK_KV, SEQ_LEN, DTYPE
     )
 
     # --- write back: store log-sum-exp (for bwd) and O ---
-    m_i += tl.math.log(l_i + 1e-20)
     offs_q  = start_q + tl.arange(0, BLOCK_Q)
+    m_i += tl.math.log(l_i + 1e-20)
     m_ptrs = M + pid_bh * SEQ_LEN + offs_q
     tl.store(m_ptrs, m_i, mask=offs_q < SEQ_LEN)
     tl.store(O_block_ptr, O_block.to(O.type.element_ty), boundary_check=(0, 1))
@@ -300,13 +301,13 @@ def _attn_bwd_dk_dv(
         m  = tl.load(M + offs_q, mask=offs_q < SEQ_LEN, other=0.0).to(tl.float32)
         Di = tl.load(D + offs_q, mask=offs_q < SEQ_LEN, other=0.0).to(tl.float32)
 
-        S_T = tl.dot(K_block, qT_block)
+        QK_T = tl.dot(K_block, qT_block) 
         kv_valid = offs_kv < SEQ_LEN
-        S_T = tl.where(kv_valid[:, None], S_T, -float("inf"))
-        P_T = tl.exp(S_T.to(tl.float32) - m[None, :])
+        QK_T = tl.where(kv_valid[:, None], QK_T, -float("inf"))
+        P_T = tl.exp(QK_T.to(tl.float32) - m[None, :])
 
         # --- dV += Pᵀ @ dO  (match operand dtypes) ---
-        dV_acc = tl.dot(P_T.to(DTYPE), dO_block, dV_acc)
+        dV_acc += tl.dot(P_T.to(DTYPE), dO_block)
 
         # --- dpᵀ = V @ dOᵀ, then dSᵀ = Pᵀ * (dpᵀ - Di) ---
         dpT = tl.dot(V_block, tl.trans(dO_block)).to(tl.float32)
@@ -317,7 +318,7 @@ def _attn_bwd_dk_dv(
         dO_blk = tl.advance(dO_blk, (BLOCK_Q, 0))
 
     # Tail-safe stores
-    dK_acc *= s.to(tl.float32)
+    dK_acc *= s 
     tl.store(dV_blk, dV_acc.to(dV.type.element_ty), boundary_check=(0, 1))
     tl.store(dK_blk, dK_acc.to(dK.type.element_ty), boundary_check=(0, 1))
     
@@ -368,7 +369,7 @@ def _attn_bwd_dq(
     num_tiles_m   = tl.cdiv(SEQ_LEN, BLOCK_Q)
     group_id      = pid_q // GROUP_N
     group_start   = group_id * GROUP_N
-    
+    # if this CTA's group starts past the last tile, exit early
     if group_start >= num_tiles_m:
         return
     tiles_in_this = tl.minimum(GROUP_N, num_tiles_m - group_start)
@@ -386,7 +387,6 @@ def _attn_bwd_dq(
     off_bh_dq = (b * s_dqb + h * s_dqh).to(tl.int64)
     off_bh_q  = (b * sqb   + h * sqh  ).to(tl.int64)
     off_bh_do = (b * sob   + h * soh  ).to(tl.int64)
-    
     # ---------- block pointers ----------
     Q_blk = tl.make_block_ptr(
         Q + off_bh_q,(SEQ_LEN, HEAD_DIM),(sqs, sqd),(start_q, 0),(BLOCK_Q, HEAD_DIM),(1, 0),
@@ -412,33 +412,35 @@ def _attn_bwd_dq(
     m  = tl.load(M + offs_q, mask=offs_q < SEQ_LEN, other=0.0)[:, None]  # [BLOCK_Q, 1]
     Di = tl.load(D + offs_q, mask=offs_q < SEQ_LEN, other=0.0)           # [BLOCK_Q]
     s = tl.full([1], softmax_scale, dtype=DTYPE)
-    Q_block  = tl.load(Q_blk,  boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s
-    dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+    Q_block  = tl.load(Q_blk,  boundary_check=(0, 1), padding_option="zero") * s
+    dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero")
     dQ_block = tl.zeros((BLOCK_Q, HEAD_DIM), dtype=tl.float32)
 
     # ---------- loop over KV tiles ----------
     num_steps = tl.cdiv(SEQ_LEN, BLOCK_KV)
     for step in range(num_steps):
-        K_T_block = tl.load(K_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
-        V_T_block = tl.load(V_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+        K_T_block = tl.load(K_T_blk, boundary_check=(0, 1), padding_option="zero")
+        V_T_block = tl.load(V_T_blk, boundary_check=(0, 1), padding_option="zero")
         
         start_kv = step * BLOCK_KV
         kv_idx   = start_kv + offs_kv
         kv_valid = kv_idx < SEQ_LEN
         S = tl.dot(Q_block, K_T_block)                     # [BLOCK_Q, BLOCK_KV]
         S = tl.where(kv_valid[None, :], S, -float("inf"))
-        P = tl.exp(S.to(tl.float32) - m)                   # [BLOCK_Q, BLOCK_KV]
+        P = tl.exp(S - m)                                  # [BLOCK_Q, BLOCK_KV]
 
         # dP = dO @ Vᵀ  (match dtypes for dot)
-        dP = tl.dot(dO_block, V_T_block).to(tl.float32)
+        dP = tl.dot(dO_block.to(DTYPE), V_T_block.to(DTYPE)).to(tl.float32)
         dS = (P * (dP - Di[:, None])).to(DTYPE)
-        dQ_block = tl.dot(dS, tl.trans(K_T_block), dQ_block)
+        dQ_block = tl.dot(dS, tl.trans(K_T_block.to(DTYPE)), dQ_block)
 
         K_T_blk = tl.advance(K_T_blk, (0, BLOCK_KV))
         V_T_blk = tl.advance(V_T_blk, (0, BLOCK_KV))
     
-    dQ_block *= s.to(tl.float32)
+    dQ_block *= s
     tl.store(dQ_blk, dQ_block.to(dQ.type.element_ty), boundary_check=(0, 1))
+
+
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
@@ -475,6 +477,9 @@ class TritonAttention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, M = ctx.saved_tensors
+        #dO = dO.contiguous()
+        #assert dO.is_contiguous()
+        #assert Q.stride() == K.stride() == V.stride() == O.stride() == dO.stride()
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
@@ -485,7 +490,9 @@ class TritonAttention(torch.autograd.Function):
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
-            O, dO, D, *O.stride(), *dO.stride(),
+            O, dO, D, 
+            *O.stride(),
+            *dO.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM,
         )
         #assert torch.isnan(D).sum() == 0
@@ -496,9 +503,11 @@ class TritonAttention(torch.autograd.Function):
             Q, K, V, dO, dK, dV, M, D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
             *dK.stride(), *dV.stride(),
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM, 
-            DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM, DTYPE=ctx.comp_triton, 
+            softmax_scale=ctx.softmax_scale
         )
+        #assert torch.isnan(dK).sum() == 0
+        #assert torch.isnan(dV).sum() == 0
 
         dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                     BATCH_SIZE * NUM_HEADS)
@@ -506,12 +515,16 @@ class TritonAttention(torch.autograd.Function):
             Q, K, V, dO, dQ, M, D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
             *dQ.stride(), 
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM, 
-            DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM, DTYPE=ctx.comp_triton,
+            softmax_scale=ctx.softmax_scale
         )
+        #assert torch.isnan(dQ).sum() == 0
         return dQ, dK, dV
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
     """ViT-S-only autograd op (single-pass forward + exact backward)."""
+    #Q = Q.contiguous()
+    #K = K.contiguous()
+    #V = V.contiguous()
     return TritonAttention.apply(Q, K, V)
