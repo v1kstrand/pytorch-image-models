@@ -432,28 +432,46 @@ class TritonAttention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, M = ctx.saved_tensors
+        
+        # === reference Torch SDPA Start ===
+        # Re-enable grad for recomputation graph
+        q_ref = Q.detach().requires_grad_(True)
+        k_ref = K.detach().requires_grad_(True)
+        v_ref = V.detach().requires_grad_(True)
+
+        # === reference SDPA recompute ===
+        # keep dtype/device consistent with inputs; avoid autocast here
+        with torch.enable_grad():
+            y_ref = F.scaled_dot_product_attention(q_ref, k_ref, v_ref)
+
+        # VJP: gradients wrt (q,k,v) with upstream dO
+        gq, gk, gv = torch.autograd.grad(
+            outputs=y_ref, inputs=(q_ref, k_ref, v_ref),
+            grad_outputs=dO, retain_graph=False, allow_unused=False
+        )
+        # === reference Torch SDPA End ===
+        return gq, gk, gv
+        
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
 
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
 
-        D = torch.empty_like(M) 
+        D = torch.empty_like(M)
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
             O, dO, D, *O.stride(), *dO.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
-        #assert torch.isnan(D).sum() == 0
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
         # Fix KV and iterate through all the Q blocks
         
         _attn_bwd_dk_dv[dkdv_grid](
             Q, K, V, dO, dK, dV, M, D,
-            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
-            *dK.stride(), *dV.stride(),
+            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dK.stride(), *dV.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
@@ -463,47 +481,7 @@ class TritonAttention(torch.autograd.Function):
         
         _attn_bwd_dq[dq_grid](
             Q, K, V, dO, dQ, M, D,
-            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
-            *dQ.stride(), 
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
-            DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
-        )
-        return dQ, dK, dV
-
-    @staticmethod
-    def _backward(ctx, dO):
-        Q, K, V, O, M = ctx.saved_tensors
-        dQ = torch.empty_like(Q)
-        dK = torch.empty_like(K)
-        dV = torch.empty_like(V)
-
-        BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
-
-        D = torch.empty_like(M) 
-        pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
-                         BATCH_SIZE * NUM_HEADS)
-        _attn_bwd_preprocess[pre_grid](
-            O, dO, D, *O.stride(), *dO.stride(),
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
-        )
-        #assert torch.isnan(D).sum() == 0
-        dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
-                BATCH_SIZE * NUM_HEADS)
-        # Fix KV and iterate through all the Q blocks
-        _attn_bwd_dk_dv[dkdv_grid](
-            Q, K, V, dO, dK, dV, M, D,
-            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
-            *dK.stride(), *dV.stride(),
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
-            DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
-        )
-
-        dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
-                    BATCH_SIZE * NUM_HEADS)
-        _attn_bwd_dq[dq_grid](
-            Q, K, V, dO, dQ, M, D,
-            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
-            *dQ.stride(), 
+            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dQ.stride(), 
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
@@ -511,5 +489,4 @@ class TritonAttention(torch.autograd.Function):
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
-    """ViT-S-only autograd op (single-pass forward + exact backward)."""
     return TritonAttention.apply(Q, K, V)
