@@ -435,27 +435,43 @@ class TritonAttention(torch.autograd.Function):
 class TritonAttention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V):
-        BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
-        softmax_scale = 1 / (HEAD_DIM**0.5)
+        head_dim = Q.size(-1)
+        scale = 1.0 / (head_dim ** 0.5)
+
+        # Stateless forward (no grad graph kept)
         with torch.no_grad():
-            Q = Q * softmax_scale
-            attn = Q @ K.transpose(-2, -1)
-            attn = attn.softmax(dim=-1)
-            O = attn @ V
-        ctx.save_for_backward(Q, K, V, O)
-        return O.detach()
-    
+            attn_scores = (Q * scale) @ K.transpose(-2, -1)      # [B,H,N,N]
+            attn = attn_scores.softmax(dim=-1)                   # [B,H,N,N]
+            O = attn @ V                                         # [B,H,N,D]
+
+        # Save inputs + scale for recompute
+        ctx.scale = scale
+        ctx.save_for_backward(Q, K, V)
+        return O
+
     @staticmethod
     def backward(ctx, dO):
-        Q, K, V, O = ctx.saved_tensors
-        
-        # VJP: gradients wrt (q,k,v) with upstream dO
+        Q, K, V = ctx.saved_tensors
+        gq = gk = gv = None
+
+        # Recompute with grad enabled; disable autocast and use fp32 for stability
         with torch.enable_grad():
+            q = Q.detach().to(torch.float32).requires_grad_(True)
+            k = K.detach().to(torch.float32).requires_grad_(True)
+            v = V.detach().to(torch.float32).requires_grad_(True)
+
+            attn_scores = (q * ctx.scale) @ k.transpose(-2, -1)
+            attn = attn_scores.softmax(dim=-1)
+            y = attn @ v
+
             gq, gk, gv = torch.autograd.grad(
-                outputs=O, inputs=(Q, K, V),
-                grad_outputs=dO, retain_graph=False, allow_unused=False
+                outputs=y,
+                inputs=(q, k, v),
+                grad_outputs=dO.to(torch.float32),
+                retain_graph=False,
+                allow_unused=False,
             )
-        # === reference Torch SDPA End ===
+
         return gq, gk, gv
         
         dQ = torch.empty_like(Q)
