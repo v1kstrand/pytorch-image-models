@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from ._fx import register_notrace_function
 from .config import use_fused_attn
 from .pos_embed_sincos import apply_rot_embed_cat
-from .vit_fa_triton import sdpa_triton_fa 
+from .vit_fa_triton import sdpa_triton_fa
 
 
 @torch.fx.wrap
