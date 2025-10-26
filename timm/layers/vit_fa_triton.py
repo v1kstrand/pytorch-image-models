@@ -4,6 +4,7 @@ from torch import Tensor
 import triton
 import triton.language as tl
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 GROUP_NM_SWEEP = [4, 8]
 NUM_STAGES_SWEEP = [3, 4, 5]
@@ -97,14 +98,13 @@ def _attn_fwd(
     offs_kv = tl.arange(0, BLOCK_KV)
     for start_kv in range(0, SEQ_LEN, BLOCK_KV):
         K_block = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
-        S = tl.dot(Q_block, K_block)
+        S = tl.dot(Q_block, K_block, tl.zeros((BLOCK_Q, BLOCK_KV), tl.float32))
 
         kv_valid = start_kv + offs_kv < SEQ_LEN
         S = tl.where(kv_valid[None, :], S, -float("inf"))
 
-        S32 = S.to(tl.float32) 
-        m_ij = tl.maximum(m_i, tl.max(S32, axis=1))
-        P_block = tl.exp(S32 - m_ij[:, None])
+        m_ij    = tl.maximum(m_i, tl.max(S, axis=1))
+        P_block = tl.exp(S - m_ij[:, None])
         l_ij = tl.sum(P_block, axis=1)
 
         alpha = tl.exp(m_i - m_ij)
@@ -250,7 +250,7 @@ def _attn_bwd_dk_dv(
     dV_acc = tl.zeros((BLOCK_KV, HEAD_DIM), dtype=tl.float32)
     dK_acc = tl.zeros((BLOCK_KV, HEAD_DIM), dtype=tl.float32)
     s = tl.full([1], softmax_scale, dtype=DTYPE)
-    K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE) 
+    K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     V_block = tl.load(V_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     offs_kv  = start_kv + tl.arange(0, BLOCK_KV)
     
@@ -441,7 +441,7 @@ class TritonAttention(torch.autograd.Function):
 
         # === reference SDPA recompute ==
         # keep dtype/device consistent with inputs; avoid autocast here
-        with torch.enable_grad():
+        with torch.enable_grad(), sdpa_kernel(SDPBackend.MATH):
             y_ref = F.scaled_dot_product_attention(q_ref, k_ref, v_ref)
 
         # VJP: gradients wrt (q,k,v) with upstream dO
