@@ -443,7 +443,7 @@ class TritonAttention(torch.autograd.Function):
             attn = attn.softmax(dim=-1)
             O = attn @ V
         ctx.save_for_backward(Q, K, V, O)
-        return O
+        return O.detach()
     
     @staticmethod
     def backward(ctx, dO):
