@@ -417,7 +417,7 @@ class TritonAttention(torch.autograd.Function):
         ctx.softmax_scale = softmax_scale
         ctx.comp_triton = comp_triton
         
-        with torch.enable_grad(), sdpa_kernel(SDPA_BACKEND):
+        with torch.no_grad(), sdpa_kernel(SDPA_BACKEND):
             return F.scaled_dot_product_attention(Q, K, V)
         
         grid = lambda args: (
