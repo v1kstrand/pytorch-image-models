@@ -424,20 +424,26 @@ class TritonAttention(torch.autograd.Function):
         )
 
         ctx.save_for_backward(Q, K, V, O, M)
-        ctx.grid = grid
         ctx.softmax_scale = softmax_scale
-        ctx.HEAD_DIM = HEAD_DIM
         ctx.comp_triton = comp_triton
         return O
     
     @staticmethod
     def backward(ctx, dO):
-        q, k, v, _, _ = ctx.saved_tensors
+    
+
+    @staticmethod
+    def backward(ctx, dO):
+        Q, K, V, O, M = ctx.saved_tensors
+        dQ = torch.empty_like(Q)
+        dK = torch.empty_like(K)
+        dV = torch.empty_like(V)
+        
 
         # Re-enable grad for recomputation graph
-        q_ref = q.detach().requires_grad_(True)
-        k_ref = k.detach().requires_grad_(True)
-        v_ref = v.detach().requires_grad_(True)
+        q_ref = Q.detach().requires_grad_(True)
+        k_ref = K.detach().requires_grad_(True)
+        v_ref = V.detach().requires_grad_(True)
 
         # === reference SDPA recompute ===
         # keep dtype/device consistent with inputs; avoid autocast here
@@ -449,33 +455,26 @@ class TritonAttention(torch.autograd.Function):
             outputs=y_ref, inputs=(q_ref, k_ref, v_ref),
             grad_outputs=dO, retain_graph=False, allow_unused=False
         )
-        return gq, gk, gv
 
-    @staticmethod
-    def _backward(ctx, dO):
-        Q, K, V, O, M = ctx.saved_tensors
-        dQ = torch.empty_like(Q)
-        dK = torch.empty_like(K)
-        dV = torch.empty_like(V)
-
-        BATCH_SIZE, NUM_HEADS, SEQ_LEN, _ = Q.size()
+        BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
 
         D = torch.empty_like(M) 
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
             O, dO, D, *O.stride(), *dO.stride(),
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM,
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
         #assert torch.isnan(D).sum() == 0
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
         # Fix KV and iterate through all the Q blocks
+        
         _attn_bwd_dk_dv[dkdv_grid](
             Q, K, V, dO, dK, dV, M, D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
             *dK.stride(), *dV.stride(),
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM, 
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
 
@@ -485,7 +484,46 @@ class TritonAttention(torch.autograd.Function):
             Q, K, V, dO, dQ, M, D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
             *dQ.stride(), 
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=ctx.HEAD_DIM, 
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
+            DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
+        )
+        return dQ, gk, gv
+
+    @staticmethod
+    def _backward(ctx, dO):
+        Q, K, V, O, M = ctx.saved_tensors
+        dQ = torch.empty_like(Q)
+        dK = torch.empty_like(K)
+        dV = torch.empty_like(V)
+
+        BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
+
+        D = torch.empty_like(M) 
+        pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
+                         BATCH_SIZE * NUM_HEADS)
+        _attn_bwd_preprocess[pre_grid](
+            O, dO, D, *O.stride(), *dO.stride(),
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
+        )
+        #assert torch.isnan(D).sum() == 0
+        dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
+                BATCH_SIZE * NUM_HEADS)
+        # Fix KV and iterate through all the Q blocks
+        _attn_bwd_dk_dv[dkdv_grid](
+            Q, K, V, dO, dK, dV, M, D,
+            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
+            *dK.stride(), *dV.stride(),
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
+            DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
+        )
+
+        dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
+                    BATCH_SIZE * NUM_HEADS)
+        _attn_bwd_dq[dq_grid](
+            Q, K, V, dO, dQ, M, D,
+            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
+            *dQ.stride(), 
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
         return dQ, dK, dV
