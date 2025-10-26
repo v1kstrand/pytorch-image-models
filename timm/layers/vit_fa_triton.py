@@ -439,7 +439,7 @@ class TritonAttention(torch.autograd.Function):
         k_ref = K.detach().requires_grad_(True)
         v_ref = V.detach().requires_grad_(True)
 
-        # === reference SDPA recompute ===
+        # === reference SDPA recompute ==
         # keep dtype/device consistent with inputs; avoid autocast here
         with torch.enable_grad():
             y_ref = F.scaled_dot_product_attention(q_ref, k_ref, v_ref)
