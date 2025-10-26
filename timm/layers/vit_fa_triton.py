@@ -434,8 +434,9 @@ class TritonAttention(torch.autograd.Function):
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
-        
 
+
+        # === reference Torch SDPA Start ===
         # Re-enable grad for recomputation graph
         q_ref = Q.detach().requires_grad_(True)
         k_ref = K.detach().requires_grad_(True)
@@ -451,6 +452,7 @@ class TritonAttention(torch.autograd.Function):
             outputs=y_ref, inputs=(q_ref, k_ref, v_ref),
             grad_outputs=dO, retain_graph=False, allow_unused=False
         )
+        # === reference Torch SDPA End ===
 
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
 
