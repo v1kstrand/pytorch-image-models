@@ -408,14 +408,20 @@ class TritonAttention(torch.autograd.Function):
         
         softmax_scale = 1 / (HEAD_DIM**0.5)
         O = torch.empty_like(Q)
-
+        M = torch.empty(
+            (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
+        )
+        
+        ctx.save_for_backward(Q, K, V, O, M)
+        ctx.softmax_scale = softmax_scale
+        ctx.comp_triton = comp_triton
+        
+        with torch.enable_grad(), sdpa_kernel(SDPBackend.MATH):
+            return F.scaled_dot_product_attention(Q, K, V)
+        
         grid = lambda args: (
             triton.cdiv(SEQ_LEN, args["BLOCK_Q"]),
             BATCH_SIZE * NUM_HEADS,
-        )
-        # M is the logsumexp for the backward pass, one for each query
-        M = torch.empty(
-            (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         )
         _attn_fwd[grid](
             Q, K, V, M, O,
@@ -423,10 +429,6 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM, 
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
-
-        ctx.save_for_backward(Q, K, V, O, M)
-        ctx.softmax_scale = softmax_scale
-        ctx.comp_triton = comp_triton
         return O
     
     @staticmethod
@@ -489,7 +491,7 @@ class TritonAttention(torch.autograd.Function):
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
-    Q = Q.contiguous()
-    K = K.contiguous()
-    V = V.contiguous()
+    #Q = Q.contiguous()
+    #K = K.contiguous()
+    #V = V.contiguous()
     return TritonAttention.apply(Q, K, V)
