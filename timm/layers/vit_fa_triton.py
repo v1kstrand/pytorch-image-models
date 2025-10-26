@@ -430,10 +430,6 @@ class TritonAttention(torch.autograd.Function):
     
     @staticmethod
     def backward(ctx, dO):
-    
-
-    @staticmethod
-    def backward(ctx, dO):
         Q, K, V, O, M = ctx.saved_tensors
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
