@@ -402,7 +402,7 @@ def _attn_bwd_dq(
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, V):
+    def _forward(ctx, Q, K, V):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         comp_torch = _sdpa_comp_dtype(Q)
         comp_triton = _triton_compute_dtype(comp_torch)
@@ -432,24 +432,21 @@ class TritonAttention(torch.autograd.Function):
         )
         return O
     
+class TritonAttention(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, Q, K, V):
+        with torch.no_grad(), sdpa_kernel(SDPA_BACKEND):
+            O = F.scaled_dot_product_attention(Q, K, V).detach()
+        ctx.save_for_backward(Q, K, V, O)
+        return O
+    
     @staticmethod
     def backward(ctx, dO):
-        Q, K, V, O, M = ctx.saved_tensors
+        Q, K, V, O = ctx.saved_tensors
         
-        # === reference Torch SDPA Start ===
-        # Re-enable grad for recomputation graph
-        q_ref = Q.detach().requires_grad_(True)
-        k_ref = K.detach().requires_grad_(True)
-        v_ref = V.detach().requires_grad_(True)
-
-        # === reference SDPA recompute ==
-        # keep dtype/device consistent with inputs; avoid autocast here
-        with torch.enable_grad(), sdpa_kernel(SDPA_BACKEND):
-            y_ref = F.scaled_dot_product_attention(q_ref, k_ref, v_ref)
-
         # VJP: gradients wrt (q,k,v) with upstream dO
         gq, gk, gv = torch.autograd.grad(
-            outputs=y_ref, inputs=(q_ref, k_ref, v_ref),
+            outputs=O, inputs=(Q, K, V),
             grad_outputs=dO, retain_graph=False, allow_unused=False
         )
         # === reference Torch SDPA End ===
