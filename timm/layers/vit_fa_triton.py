@@ -432,7 +432,7 @@ class TritonAttention(torch.autograd.Function):
     
     @staticmethod
     def backward(ctx, dO):
-        q, k, v = ctx.saved_tensors
+        q, k, v, _, _ = ctx.saved_tensors
 
         # Re-enable grad for recomputation graph
         q_ref = q.detach().requires_grad_(True)
