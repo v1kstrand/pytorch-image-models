@@ -28,9 +28,8 @@ def _attn_fwd_inner(
     softmax_scale: tl.constexpr, BLOCK_KV: tl.constexpr,
     SEQ_LEN: tl.constexpr, DTYPE: tl.constexpr,
 ):
-    Q_block = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     s = tl.full([1], softmax_scale, dtype=DTYPE)
-    Q_block = Q_block * s
+    Q_block = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s
     offs_kv = tl.arange(0, BLOCK_KV)
     for start_kv in range(0, SEQ_LEN, BLOCK_KV):
         K_block = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
@@ -107,10 +106,10 @@ def _attn_fwd(
     b = pid_bh // NUM_HEADS
     h  = pid_bh %  NUM_HEADS
 
-    off_bh_k  = (b * skb   + h * skh  ).to(tl.int64)
-    off_bh_v  = (b * svb   + h * svh  ).to(tl.int64)
-    off_bh_q  = (b * sqb   + h * sqh  ).to(tl.int64)
-    off_bh_o = (b * sob   + h * soh  ).to(tl.int64)
+    off_bh_k  = (b * skb   + h * skh ).to(tl.int64)
+    off_bh_v  = (b * svb   + h * svh ).to(tl.int64)
+    off_bh_q  = (b * sqb   + h * sqh ).to(tl.int64)
+    off_bh_o = (b * sob   + h * soh ).to(tl.int64)
     
     # --- block pointers ---
     Q_block_ptr = tl.make_block_ptr(
@@ -273,14 +272,14 @@ def _attn_bwd_dk_dv(
     dV_acc = tl.zeros((BLOCK_KV, HEAD_DIM), dtype=tl.float32)
     dK_acc = tl.zeros((BLOCK_KV, HEAD_DIM), dtype=tl.float32)
     s = tl.full([1], softmax_scale, dtype=DTYPE)
-    K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s
+    K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE) 
     V_block = tl.load(V_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     offs_kv  = start_kv + tl.arange(0, BLOCK_KV)
     
     # Loop over Q tiles
     num_steps = tl.cdiv(SEQ_LEN, BLOCK_Q)
     for qi in range(0, num_steps):
-        qT_block = tl.load(Q_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+        qT_block = tl.load(Q_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s
         dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
         
         start_q = qi * BLOCK_Q
@@ -305,7 +304,6 @@ def _attn_bwd_dk_dv(
         dO_blk = tl.advance(dO_blk, (BLOCK_Q, 0))
 
     # Tail-safe stores
-    dK_acc *= s.to(tl.float32)
     tl.store(dV_blk, dV_acc.to(dV.type.element_ty), boundary_check=(0, 1))
     tl.store(dK_blk, dK_acc.to(dK.type.element_ty), boundary_check=(0, 1))
     
