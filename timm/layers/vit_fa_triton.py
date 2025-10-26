@@ -5,6 +5,7 @@ import triton
 import triton.language as tl
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
+SDPA_BACKEND = SDPBackend.FLASH_ATTENTION
 
 GROUP_NM_SWEEP = [4, 8]
 NUM_STAGES_SWEEP = [3, 4, 5]
@@ -416,7 +417,7 @@ class TritonAttention(torch.autograd.Function):
         ctx.softmax_scale = softmax_scale
         ctx.comp_triton = comp_triton
         
-        with torch.enable_grad(), sdpa_kernel(SDPBackend.MATH):
+        with torch.enable_grad(), sdpa_kernel(SDPA_BACKEND):
             return F.scaled_dot_product_attention(Q, K, V)
         
         grid = lambda args: (
@@ -443,7 +444,7 @@ class TritonAttention(torch.autograd.Function):
 
         # === reference SDPA recompute ==
         # keep dtype/device consistent with inputs; avoid autocast here
-        with torch.enable_grad(), sdpa_kernel(SDPBackend.MATH):
+        with torch.enable_grad(), sdpa_kernel(SDPA_BACKEND):
             y_ref = F.scaled_dot_product_attention(q_ref, k_ref, v_ref)
 
         # VJP: gradients wrt (q,k,v) with upstream dO
