@@ -437,7 +437,7 @@ class TritonAttention(torch.autograd.Function):
     def forward(ctx, Q, K, V):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         softmax_scale = 1 / (HEAD_DIM**0.5)
-        with torch.no_grad(), sdpa_kernel(SDPA_BACKEND):
+        with torch.no_grad():
             Q = Q * softmax_scale
             attn = Q @ K.transpose(-2, -1)
             attn = attn.softmax(dim=-1)
