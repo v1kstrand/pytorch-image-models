@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
-SDPA_BACKEND = SDPBackend.FLASH_ATTENTION
+SDPA_BACKEND = SDPBackend.MATH
 
 GROUP_NM_SWEEP = [4, 8]
 NUM_STAGES_SWEEP = [3, 4, 5]
