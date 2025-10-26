@@ -367,35 +367,36 @@ def _attn_bwd_dq(
     offs_kv = tl.arange(0, BLOCK_KV)
 
     # row-wise scalars
-    m  = tl.load(M + offs_q, mask=offs_q < SEQ_LEN, other=0.0)[:, None]  # [BLOCK_Q, 1]
-    Di = tl.load(D + offs_q, mask=offs_q < SEQ_LEN, other=0.0)           # [BLOCK_Q]
-    s = tl.full([1], softmax_scale, dtype=DTYPE)
-    Q_block  = tl.load(Q_blk,  boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s
+    m  = tl.load(M + offs_q, mask=offs_q < SEQ_LEN, other=0.0).to(tl.float32)[:, None]  # [BLOCK_Q,1], FP32
+    Di = tl.load(D + offs_q, mask=offs_q < SEQ_LEN, other=0.0).to(tl.float32)          # [BLOCK_Q], FP32
+    s_dt   = tl.full([1], softmax_scale, dtype=DTYPE)      # for tiles (BF16/FP16)
+    s_fp32 = tl.full([1], softmax_scale, dtype=tl.float32) # for FP32 accumulators
+    Q_block  = tl.load(Q_blk,  boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s_dt
     dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     dQ_block = tl.zeros((BLOCK_Q, HEAD_DIM), dtype=tl.float32)
 
     # ---------- loop over KV tiles ----------
     num_steps = tl.cdiv(SEQ_LEN, BLOCK_KV)
     for step in range(num_steps):
-        K_T_block = tl.load(K_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
-        V_T_block = tl.load(V_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+        K_T_block = tl.load(K_T_blk, boundary_check=(1,), padding_option="zero").to(DTYPE)
+        V_T_block = tl.load(V_T_blk, boundary_check=(1,), padding_option="zero").to(DTYPE)
         
         start_kv = step * BLOCK_KV
         kv_idx   = start_kv + offs_kv
         kv_valid = kv_idx < SEQ_LEN
-        S = tl.dot(Q_block, K_T_block)                     # [BLOCK_Q, BLOCK_KV]
+        S = tl.dot(Q_block, K_T_block, tl.zeros((BLOCK_Q, BLOCK_KV), tl.float32))
         S = tl.where(kv_valid[None, :], S, -float("inf"))
-        P = tl.exp(S.to(tl.float32) - m)                   # [BLOCK_Q, BLOCK_KV]
+        P = tl.exp(S - m)                  # [BLOCK_Q, BLOCK_KV]
 
         # dP = dO @ Vᵀ  (match dtypes for dot)
-        dP = tl.dot(dO_block, V_T_block).to(tl.float32)
+        dP = tl.dot(dO_block, V_T_block, tl.zeros((BLOCK_Q, BLOCK_KV), tl.float32))
         dS = (P * (dP - Di[:, None])).to(DTYPE)
         dQ_block = tl.dot(dS, tl.trans(K_T_block), dQ_block)
 
         K_T_blk = tl.advance(K_T_blk, (0, BLOCK_KV))
         V_T_blk = tl.advance(V_T_blk, (0, BLOCK_KV))
     
-    dQ_block *= s.to(tl.float32)
+    dQ_block *= s_fp32.to(tl.float32)
     tl.store(dQ_blk, dQ_block.to(dQ.type.element_ty), boundary_check=(0, 1))
 
 class TritonAttention(torch.autograd.Function):
@@ -435,25 +436,6 @@ class TritonAttention(torch.autograd.Function):
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
 
-
-        # === reference Torch SDPA Start ===
-        # Re-enable grad for recomputation graph
-        q_ref = Q.detach().requires_grad_(True)
-        k_ref = K.detach().requires_grad_(True)
-        v_ref = V.detach().requires_grad_(True)
-
-        # === reference SDPA recompute ===
-        # keep dtype/device consistent with inputs; avoid autocast here
-        with torch.enable_grad():
-            y_ref = F.scaled_dot_product_attention(q_ref, k_ref, v_ref)
-
-        # VJP: gradients wrt (q,k,v) with upstream dO
-        gq, gk, gv = torch.autograd.grad(
-            outputs=y_ref, inputs=(q_ref, k_ref, v_ref),
-            grad_outputs=dO, retain_graph=False, allow_unused=False
-        )
-        # === reference Torch SDPA End ===
-
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
 
         D = torch.empty_like(M) 
@@ -478,6 +460,7 @@ class TritonAttention(torch.autograd.Function):
 
         dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                     BATCH_SIZE * NUM_HEADS)
+        
         _attn_bwd_dq[dq_grid](
             Q, K, V, dO, dQ, M, D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(),
@@ -485,7 +468,7 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
-        return gq, dK, dV
+        return dQ, dK, dV
 
     @staticmethod
     def _backward(ctx, dO):
