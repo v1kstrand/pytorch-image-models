@@ -450,10 +450,11 @@ class TritonAttention(torch.autograd.Function):
         Q, K, V, O = ctx.saved_tensors
         
         # VJP: gradients wrt (q,k,v) with upstream dO
-        gq, gk, gv = torch.autograd.grad(
-            outputs=O, inputs=(Q, K, V),
-            grad_outputs=dO, retain_graph=False, allow_unused=False
-        )
+        with torch.enable_grad():
+            gq, gk, gv = torch.autograd.grad(
+                outputs=O, inputs=(Q, K, V),
+                grad_outputs=dO, retain_graph=False, allow_unused=False
+            )
         # === reference Torch SDPA End ===
         return gq, gk, gv
         
