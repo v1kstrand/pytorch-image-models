@@ -435,8 +435,13 @@ class TritonAttention(torch.autograd.Function):
 class TritonAttention(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V):
+        BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
+        softmax_scale = 1 / (HEAD_DIM**0.5)
         with torch.no_grad(), sdpa_kernel(SDPA_BACKEND):
-            O = F.scaled_dot_product_attention(Q, K, V).detach()
+            Q = Q * softmax_scale
+            attn = Q @ K.transpose(-2, -1)
+            attn = attn.softmax(dim=-1)
+            O = attn @ V
         ctx.save_for_backward(Q, K, V, O)
         return O
     
