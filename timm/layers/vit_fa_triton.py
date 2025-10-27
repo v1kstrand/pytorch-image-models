@@ -417,9 +417,6 @@ class TritonAttention(torch.autograd.Function):
         ctx.softmax_scale = softmax_scale
         ctx.comp_triton = comp_triton
         
-        with torch.no_grad(), sdpa_kernel(SDPA_BACKEND):
-            return F.scaled_dot_product_attention(Q, K, V)
-        
         grid = lambda args: (
             triton.cdiv(SEQ_LEN, args["BLOCK_Q"]),
             BATCH_SIZE * NUM_HEADS,
@@ -432,9 +429,7 @@ class TritonAttention(torch.autograd.Function):
         )
         return O
     
-class TritonAttention(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, Q, K, V):
+    def _forward(ctx, Q, K, V):
         head_dim = Q.size(-1)
         scale = 1.0 / (head_dim ** 0.5)
 
@@ -448,10 +443,6 @@ class TritonAttention(torch.autograd.Function):
         ctx.scale = scale
         ctx.save_for_backward(Q, K, V)
         return O
-
-    @staticmethod
-    def backward(ctx, dO):
-        Q, K, V = ctx.saved_tensors
         gq = gk = gv = None
 
         # Recompute with grad enabled; disable autocast and use fp32 for stability
@@ -473,7 +464,11 @@ class TritonAttention(torch.autograd.Function):
             )
 
         return gq, gk, gv
-        
+
+    @staticmethod
+    def backward(ctx, dO):
+        Q, K, V, O, M = ctx.saved_tensors
+
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
