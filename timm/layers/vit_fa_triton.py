@@ -402,7 +402,7 @@ def _attn_bwd_dq(
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
-    def _forward(ctx, Q, K, V):
+    def forward(ctx, Q, K, V):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         comp_torch = _sdpa_comp_dtype(Q)
         comp_triton = _triton_compute_dtype(comp_torch)
