@@ -350,7 +350,7 @@ def create_loader(
         sampler=sampler,
         collate_fn=collate_fn,
         pin_memory=pin_memory,
-        drop_last=is_training,
+        drop_last=True,
         worker_init_fn=partial(_worker_init, worker_seeding=worker_seeding),
         persistent_workers=persistent_workers
     )

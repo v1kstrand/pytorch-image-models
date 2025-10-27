@@ -4,6 +4,8 @@ from torch import Tensor
 import triton
 import triton.language as tl
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
+SDPA_BACKEND = SDPBackend.MATH
 
 GROUP_NM_SWEEP = [4, 8]
 NUM_STAGES_SWEEP = [3, 4, 5]
@@ -97,14 +99,13 @@ def _attn_fwd(
     offs_kv = tl.arange(0, BLOCK_KV)
     for start_kv in range(0, SEQ_LEN, BLOCK_KV):
         K_block = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
-        S = tl.dot(Q_block, K_block)
+        S = tl.dot(Q_block, K_block, tl.zeros((BLOCK_Q, BLOCK_KV), tl.float32))
 
         kv_valid = start_kv + offs_kv < SEQ_LEN
         S = tl.where(kv_valid[None, :], S, -float("inf"))
 
-        S32 = S.to(tl.float32) 
-        m_ij = tl.maximum(m_i, tl.max(S32, axis=1))
-        P_block = tl.exp(S32 - m_ij[:, None])
+        m_ij    = tl.maximum(m_i, tl.max(S, axis=1))
+        P_block = tl.exp(S - m_ij[:, None])
         l_ij = tl.sum(P_block, axis=1)
 
         alpha = tl.exp(m_i - m_ij)
@@ -250,7 +251,7 @@ def _attn_bwd_dk_dv(
     dV_acc = tl.zeros((BLOCK_KV, HEAD_DIM), dtype=tl.float32)
     dK_acc = tl.zeros((BLOCK_KV, HEAD_DIM), dtype=tl.float32)
     s = tl.full([1], softmax_scale, dtype=DTYPE)
-    K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE) 
+    K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     V_block = tl.load(V_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     offs_kv  = start_kv + tl.arange(0, BLOCK_KV)
     
@@ -408,14 +409,17 @@ class TritonAttention(torch.autograd.Function):
         
         softmax_scale = 1 / (HEAD_DIM**0.5)
         O = torch.empty_like(Q)
-
+        M = torch.empty(
+            (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
+        )
+        
+        ctx.save_for_backward(Q, K, V, O, M)
+        ctx.softmax_scale = softmax_scale
+        ctx.comp_triton = comp_triton
+        
         grid = lambda args: (
             triton.cdiv(SEQ_LEN, args["BLOCK_Q"]),
             BATCH_SIZE * NUM_HEADS,
-        )
-        # M is the logsumexp for the backward pass, one for each query
-        M = torch.empty(
-            (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         )
         _attn_fwd[grid](
             Q, K, V, M, O,
@@ -423,35 +427,48 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM, 
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
-
-        ctx.save_for_backward(Q, K, V, O, M)
-        ctx.softmax_scale = softmax_scale
-        ctx.comp_triton = comp_triton
         return O
     
+    def _forward(ctx, Q, K, V):
+        head_dim = Q.size(-1)
+        scale = 1.0 / (head_dim ** 0.5)
+
+        # Stateless forward (no grad graph kept)
+        with torch.no_grad():
+            attn_scores = (Q * scale) @ K.transpose(-2, -1)      # [B,H,N,N]
+            attn = attn_scores.softmax(dim=-1)                   # [B,H,N,N]
+            O = attn @ V                                         # [B,H,N,D]
+
+        # Save inputs + scale for recompute
+        ctx.scale = scale
+        ctx.save_for_backward(Q, K, V)
+        return O
+        gq = gk = gv = None
+
+        # Recompute with grad enabled; disable autocast and use fp32 for stability
+        with torch.enable_grad():
+            q = Q.detach().to(torch.float32).requires_grad_(True)
+            k = K.detach().to(torch.float32).requires_grad_(True)
+            v = V.detach().to(torch.float32).requires_grad_(True)
+
+            attn_scores = (q * ctx.scale) @ k.transpose(-2, -1)
+            attn = attn_scores.softmax(dim=-1)
+            y = attn @ v
+
+            gq, gk, gv = torch.autograd.grad(
+                outputs=y,
+                inputs=(q, k, v),
+                grad_outputs=dO.to(torch.float32),
+                retain_graph=False,
+                allow_unused=False,
+            )
+
+        return gq, gk, gv
+
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, M = ctx.saved_tensors
-        
-        # === reference Torch SDPA Start ===
-        # Re-enable grad for recomputation graph
-        q_ref = Q.detach().requires_grad_(True)
-        k_ref = K.detach().requires_grad_(True)
-        v_ref = V.detach().requires_grad_(True)
 
-        # === reference SDPA recompute ==
-        # keep dtype/device consistent with inputs; avoid autocast here
-        with torch.enable_grad():
-            y_ref = F.scaled_dot_product_attention(q_ref, k_ref, v_ref)
-
-        # VJP: gradients wrt (q,k,v) with upstream dO
-        gq, gk, gv = torch.autograd.grad(
-            outputs=y_ref, inputs=(q_ref, k_ref, v_ref),
-            grad_outputs=dO, retain_graph=False, allow_unused=False
-        )
-        # === reference Torch SDPA End ===
-        return gq, gk, gv
-        
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
@@ -481,7 +498,7 @@ class TritonAttention(torch.autograd.Function):
         
         _attn_bwd_dq[dq_grid](
             Q, K, V, dO, dQ, M, D,
-            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dQ.stride(), 
+            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dQ.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
@@ -489,4 +506,7 @@ class TritonAttention(torch.autograd.Function):
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
+    #Q = Q.contiguous()
+    #K = K.contiguous()
+    #V = V.contiguous()
     return TritonAttention.apply(Q, K, V)
