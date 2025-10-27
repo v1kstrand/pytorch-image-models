@@ -80,9 +80,9 @@ class Attention(nn.Module):
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
         
-        if True:
+        if False:
             x = sdpa_triton_fa(q, k, v)
-        elif False:
+        elif True:
             x = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attn_mask,
