@@ -697,10 +697,7 @@ def main(override_args=None):
             print(f"Resuming training from checkpoint {args.resume} at epoch {resume_epoch}")
         else:
             print(f"No checkpoint found at {cp_path}")
-            args.resume = None
-    else:
-        update_config_file(args, "resume", True)
-            
+            args.resume = None            
 
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
@@ -1369,6 +1366,7 @@ def train_one_epoch(
         if saver is not None and args.recovery_interval and (
                 (update_idx + 1) % args.recovery_interval == 0):
             saver.save_recovery(epoch, batch_idx=update_idx)
+        update_config_file(args, "resume", True)
 
         if lr_scheduler is not None:
             lr_scheduler.step_update(num_updates=num_updates, metric=losses_m.avg)
