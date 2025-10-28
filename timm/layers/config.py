@@ -140,7 +140,8 @@ def use_fused_attn(experimental: bool = False) -> bool:
         return False
     if experimental:
         return _USE_FUSED_ATTN > 1
-    return _USE_FUSED_ATTN > 0
+    print(f'Using experimental fused attention with _USE_FUSED_ATTN = {_USE_FUSED_ATTN}')
+    return _USE_FUSED_ATTN
 
 
 def set_fused_attn(enable: bool = True, experimental: bool = False):
