@@ -32,6 +32,7 @@ import torchvision.utils
 import yaml
 
 import comet_ml
+from ruamel.yaml import YAML
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 
 from timm import utils
@@ -433,8 +434,7 @@ group.add_argument('--return-model', action='store_true', default=False,
 
 
 group.add_argument('--base-dir', default="/notebooks/output/train", type=str)
-
-
+group.add_argument('--yaml-path', default="/notebooks/params_timm.yaml", type=str)
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -480,8 +480,8 @@ def main(override_args=None):
     if args.comet_exp_name:
         comet_exp = comet_ml.start(
             api_key=os.getenv("COMET_API_KEY"),
-            project_name=args.comet_exp_name,
-            experiment_key=args.comet_exp_key or None
+            project_name=args.comet_proj_name,
+            experiment_key=args.comet_exp_key or None if args.resume else None
         )
         comet_exp.set_name(args.comet_exp_name)
 
@@ -1121,6 +1121,16 @@ def main(override_args=None):
                 if eval_metrics is not None:
                     to_log.update({f"val/{k}": v for k, v in _nums(eval_metrics).items()})
                 comet_exp.log_metrics(to_log, step=epoch)
+                if args.comet_exp_key is None:
+                    r_yaml = YAML(typ="rt")
+                    r_yaml.preserve_quotes = True
+                    with open(args.config_file, "r", encoding="utf-8") as f:
+                        yaml_data = r_yaml.load(f)
+
+                    yaml_data["comet_exp_key"] = comet_exp.get_key()
+
+                    with open(args.config_file, "w", encoding="utf-8") as f:
+                        r_yaml.dump(yaml_data, f)
 
             if eval_metrics is not None:
                 latest_metric = eval_metrics[eval_metric]
