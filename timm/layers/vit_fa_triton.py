@@ -464,7 +464,8 @@ class TritonAttention(torch.autograd.Function):
         dQ32 = torch.matmul(ds, k32) * scale  # [B,H,N,D]
         # dK = (ds^T @ Q) * scale
         dK32 = torch.matmul(ds.transpose(-2, -1), q32) * scale  # [B,H,N,D]
-        gk, gv, gq = dK32.to(K.dtype), dV32.to(V.dtype), dQ32.to(Q.dtype)
+        gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype), 
+        return gq, gk, gv
         
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
