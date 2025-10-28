@@ -416,6 +416,7 @@ class TritonAttention(torch.autograd.Function):
         ctx.save_for_backward(Q, K, V, O, M)
         ctx.softmax_scale = softmax_scale
         ctx.comp_triton = comp_triton
+        ctx.scale = softmax_scale
         
         grid = lambda args: (
             triton.cdiv(SEQ_LEN, args["BLOCK_Q"]),
