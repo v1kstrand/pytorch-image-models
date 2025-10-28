@@ -486,7 +486,7 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
-        return dQ, gk, gv
+        return dQ, gk, dV
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
