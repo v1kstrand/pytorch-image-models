@@ -434,14 +434,16 @@ class TritonAttention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, M = ctx.saved_tensors
+        
         gq = gk = gv = None
+        q = Q.detach().to(torch.float32).requires_grad_(True)
+        k = K.detach().to(torch.float32).requires_grad_(True)
+        v = V.detach().to(torch.float32).requires_grad_(True)
 
         # Recompute with grad enabled; disable autocast and use fp32 for stability
-        q = Q.clone().detach().to(torch.float32)
-        k = K.clone().detach().to(torch.float32)
-        v = V.clone().detach().to(torch.float32)
-        
         with torch.enable_grad():
+
+
             attn_scores = (q * ctx.scale) @ k.transpose(-2, -1)
             attn = attn_scores.softmax(dim=-1)
             y = attn @ v

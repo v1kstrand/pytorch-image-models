@@ -452,6 +452,7 @@ def update_config_file(args, key, value):
         yaml_data = r_yaml.load(f)
 
     yaml_data[key] = value
+    setattr(args, key, value)
 
     with open(args.yaml_config_path, "w", encoding="utf-8") as f:
         r_yaml.dump(yaml_data, f)
