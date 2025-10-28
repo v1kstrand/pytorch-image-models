@@ -436,11 +436,10 @@ class TritonAttention(torch.autograd.Function):
         gq = gk = gv = None
 
         # Recompute with grad enabled; disable autocast and use fp32 for stability
+        q = Q.clone().detach().to(torch.float32)
+        k = K.clone().detach().to(torch.float32)
+        v = V.clone().detach().to(torch.float32)
         with torch.enable_grad():
-            q = Q.clone().detach().to(torch.float32)
-            k = K.clone().detach().to(torch.float32)
-            v = V.clone().detach().to(torch.float32)
-
             attn_scores = (q * ctx.scale) @ k.transpose(-2, -1)
             attn = attn_scores.softmax(dim=-1)
             y = attn @ v
