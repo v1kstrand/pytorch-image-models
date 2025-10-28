@@ -444,6 +444,17 @@ def _parse_args():
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
     return args, args_text
 
+def update_config_file(args, key, value):
+    r_yaml = YAML(typ="rt")
+    r_yaml.preserve_quotes = True
+    with open(args.config_file, "r", encoding="utf-8") as f:
+        yaml_data = r_yaml.load(f)
+
+    yaml_data["key"] = value
+
+    with open(args.config_file, "w", encoding="utf-8") as f:
+        r_yaml.dump(yaml_data, f)
+
 
 def main(override_args=None):
     override_args = override_args or {}
@@ -686,6 +697,8 @@ def main(override_args=None):
         else:
             print(f"No checkpoint found at {cp_path}")
             args.resume = None
+    else:
+        update_config_file(args, "resume", True)
             
 
     # setup exponential moving average of model weights, SWA could be used here too
@@ -1122,15 +1135,7 @@ def main(override_args=None):
                     to_log.update({f"val/{k}": v for k, v in _nums(eval_metrics).items()})
                 comet_exp.log_metrics(to_log, step=epoch)
                 if args.comet_exp_key is None:
-                    r_yaml = YAML(typ="rt")
-                    r_yaml.preserve_quotes = True
-                    with open(args.config_file, "r", encoding="utf-8") as f:
-                        yaml_data = r_yaml.load(f)
-
-                    yaml_data["comet_exp_key"] = comet_exp.get_key()
-
-                    with open(args.config_file, "w", encoding="utf-8") as f:
-                        r_yaml.dump(yaml_data, f)
+                    update_config_file(args, "comet_exp_key", comet_exp.get_key())
 
             if eval_metrics is not None:
                 latest_metric = eval_metrics[eval_metric]
