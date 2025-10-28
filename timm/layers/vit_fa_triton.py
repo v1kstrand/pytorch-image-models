@@ -5,6 +5,8 @@ import triton
 import triton.language as tl
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
+import torch._dynamo as dynamo
+
 SDPA_BACKEND = SDPBackend.MATH
 
 GROUP_NM_SWEEP = [4, 8]
@@ -436,10 +438,8 @@ class TritonAttention(torch.autograd.Function):
         Q, K, V, O, M = ctx.saved_tensors
         
         gq = gk = gv = None
-
-
         # Recompute with grad enabled; disable autocast and use fp32 for stability
-        with torch.enable_grad():
+        with dynamo.disable(), torch.enable_grad():
             q = Q.detach().to(torch.float32).requires_grad_(True)
             k = K.detach().to(torch.float32).requires_grad_(True)
             v = V.detach().to(torch.float32).requires_grad_(True)
