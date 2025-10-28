@@ -435,7 +435,7 @@ group.add_argument('--return-model', action='store_true', default=False,
 
 
 group.add_argument('--base-dir', default="/notebooks/output/train", type=str)
-group.add_argument('--yaml-path', default="/notebooks/params_timm.yaml", type=str)
+group.add_argument('--yaml-config-path', default="/notebooks/params_timm.yaml", type=str)
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -448,12 +448,12 @@ def _parse_args():
 def update_config_file(args, key, value):
     r_yaml = YAML(typ="rt")
     r_yaml.preserve_quotes = True
-    with open(args.config_file, "r", encoding="utf-8") as f:
+    with open(args.yaml_config_path, "r", encoding="utf-8") as f:
         yaml_data = r_yaml.load(f)
 
-    yaml_data["key"] = value
+    yaml_data[key] = value
 
-    with open(args.config_file, "w", encoding="utf-8") as f:
+    with open(args.yaml_config_path, "w", encoding="utf-8") as f:
         r_yaml.dump(yaml_data, f)
 
 
