@@ -438,7 +438,6 @@ class TritonAttention(torch.autograd.Function):
     def backward(ctx, dO):
         Q, K, V, O, M = ctx.saved_tensors
         scale = ctx.scale
-        
 
         # Compute in fp32 for stability
         q32 = Q.to(torch.float32)
