@@ -432,6 +432,19 @@ class TritonAttention(torch.autograd.Function):
         )
         return O
     
+    @staticmethod
+    @dynamo.disable()          # <- prevent tracing of this method
+    def backward_torch(ctx, Q, K, V, dO):
+        with torch.enable_grad():
+            q = Q.detach().float().requires_grad_(True)
+            k = K.detach().float().requires_grad_(True)
+            v = V.detach().float().requires_grad_(True)
+            scores = (q @ k.transpose(-2, -1)) * ctx.softmax_scale  # << use the right attr
+            attn = scores.softmax(dim=-1)
+            y = attn @ v
+            gq, gk, gv = torch.autograd.grad(y, (q, k, v), dO.float(), retain_graph=False)
+        return gq.to(Q.dtype), gk.to(K.dtype), gv.to(V.dtype)
+    
 
     @staticmethod
     def backward(ctx, dO):
@@ -439,22 +452,8 @@ class TritonAttention(torch.autograd.Function):
         
         gq = gk = gv = None
         # Recompute with grad enabled; disable autocast and use fp32 for stability
-        with dynamo.disable(), torch.enable_grad():
-            q = Q.detach().to(torch.float32).requires_grad_(True)
-            k = K.detach().to(torch.float32).requires_grad_(True)
-            v = V.detach().to(torch.float32).requires_grad_(True)
-            attn_scores = (q * ctx.scale) @ k.transpose(-2, -1)
-            attn = attn_scores.softmax(dim=-1)
-            y = attn @ v
-
-            gq, gk, gv = torch.autograd.grad(
-                outputs=y,
-                inputs=(q, k, v),
-                grad_outputs=dO.to(torch.float32),
-                retain_graph=False,
-                allow_unused=False,
-            )
-
+        with torch.enable_grad():
+            gq, gk, gv = TritonAttention.backward_torch(ctx, Q, K, V, dO)
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
