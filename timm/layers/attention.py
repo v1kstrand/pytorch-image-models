@@ -82,6 +82,17 @@ class Attention(nn.Module):
         
         if self.fused_attn == 2:
             x = sdpa_triton_fa(q, k, v)
+            
+            qc = q.clone().detach()
+            kc = k.clone().detach()
+            vc = v.clone().detach()
+            
+            xc = F.scaled_dot_product_attention(qc, kc, vc)
+            
+            q.grad = qc.grad
+            k.grad = kc.grad
+            v.grad = vc.grad
+            
         elif self.fused_attn == 1:
             x = F.scaled_dot_product_attention(
                 q, k, v,
