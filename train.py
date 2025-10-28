@@ -170,7 +170,8 @@ group.add_argument('--torchcompile-dynamic', action='store_true', default=False,
 group.add_argument('--torchcompile-cache-dir', default="", type=str,
                     help="torch.compile dynamic (default: None).")
 
-
+group.add_argument('--comet-proj-name', default='comet_exp', type=str,
+                    help="torch.compile dynamic (default: None).")
 group.add_argument('--comet-exp-name', default='', type=str,
                     help="torch.compile dynamic (default: None).")
 group.add_argument('--comet-exp-key', default=None, type=str,
