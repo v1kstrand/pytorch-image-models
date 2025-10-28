@@ -439,6 +439,7 @@ class TritonAttention(torch.autograd.Function):
         q = Q.clone().detach().to(torch.float32)
         k = K.clone().detach().to(torch.float32)
         v = V.clone().detach().to(torch.float32)
+        
         with torch.enable_grad():
             attn_scores = (q * ctx.scale) @ k.transpose(-2, -1)
             attn = attn_scores.softmax(dim=-1)
