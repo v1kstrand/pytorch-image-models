@@ -504,12 +504,12 @@ class TritonAttention(torch.autograd.Function):
                 
         def comp(a, b):
             diff = (a - b).abs().to(torch.float32)
-            return torch.stack([diff.amax(), diff.mean()])
-        
-        max_dQ = torch.tensor(comp(dQ, gq), device=Q.device)
-        max_D  = torch.tensor(comp(D, _D),  device=Q.device)
-        max_M  = torch.tensor(comp(M, _M),  device=Q.device)
-        p = torch.cat((max_dQ, max_D, max_M), dim=0)
+            return torch.stack((diff.amax(), diff.mean()))  # tensor on same device as a/b
+
+        max_dQ = comp(dQ, gq)          # shape [2], GPU
+        max_D  = comp(D,  _D)          # shape [2], GPU
+        max_M  = comp(M,  _M)          # shape [2], GPU
+        p      = torch.cat((max_dQ, max_D, max_M), dim=0)   # shape [6], GPU
         
         return dQ, gk, gv, p
     
