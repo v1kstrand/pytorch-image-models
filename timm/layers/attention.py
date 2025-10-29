@@ -69,7 +69,7 @@ class Attention(nn.Module):
         self.norm = norm_layer(dim, **dd) if scale_norm else nn.Identity()
         self.proj = nn.Linear(dim, dim, bias=proj_bias, **dd)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.probe = nn.Parameter(torch.zeros(6))
+        self.probe = nn.Parameter(torch.zeros(10))
 
     def forward(
             self,
