@@ -437,10 +437,10 @@ class TritonAttention(torch.autograd.Function):
         scale = ctx.scale
 
         # Compute in fp32 for stability
-        q32 = Q.clone().detach().to(torch.float32)
-        k32 = K.clone().detach().to(torch.float32)
-        v32 = V.clone().detach().to(torch.float32)
-        dO32 = dO.clone().detach().to(torch.float32)
+        q32 = Q.to(torch.float32)
+        k32 = K.to(torch.float32)
+        v32 = V.to(torch.float32)
+        dO32 = dO.to(torch.float32)
 
         # --- Recompute softmax probabilities P ---
         # scores = (q * scale) @ k^T
@@ -501,7 +501,8 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
-                
+        
+               
         def comp(a, b):
             diff = (a - b).abs().to(torch.float32)
             return torch.stack([diff.amax(), diff.mean()])
@@ -511,7 +512,7 @@ class TritonAttention(torch.autograd.Function):
         max_M  = torch.tensor(comp(M, _M),  device=Q.device)
         p = torch.cat((max_dQ, max_D, max_M), dim=0)
         
-        return dQ, gk, gv, p
+        return gq, gk, gv, p
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
