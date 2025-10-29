@@ -510,11 +510,8 @@ class TritonAttention(torch.autograd.Function):
         max_D  = torch.tensor(comp(D, _D),  device=Q.device)
         max_M  = torch.tensor(comp(M, _M),  device=Q.device)
         p = torch.cat((max_dQ, max_D, max_M), dim=0)
-                
-        probe_out = torch.zeros(ctx.probe_size, device=Q.device, dtype=torch.float32)
-        probe_out[:p.size(0)] = p.detach().clone()
         
-        return dQ, gk, gv, probe_out
+        return dQ, gk, gv, p
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
