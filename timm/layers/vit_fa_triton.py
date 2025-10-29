@@ -502,7 +502,6 @@ class TritonAttention(torch.autograd.Function):
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
                 
-                
         def comp(a, b):
             diff = (a - b).abs().to(torch.float32)
             return torch.stack([diff.amax(), diff.mean()])
@@ -513,7 +512,7 @@ class TritonAttention(torch.autograd.Function):
         p = torch.cat((max_dQ, max_D, max_M), dim=0)
                 
         probe_out = torch.zeros(ctx.probe_size, device=Q.device, dtype=torch.float32)
-        probe_out[:p.size(0)] = p
+        probe_out[:p.size(0)] = p.detach().clone()
         
         return dQ, gk, gv, probe_out
     
