@@ -404,7 +404,7 @@ def _attn_bwd_dq(
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, V):
+    def forward(ctx, Q, K, V, probe):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         comp_torch = _sdpa_comp_dtype(Q)
         comp_triton = _triton_compute_dtype(comp_torch)
@@ -430,13 +430,12 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM, 
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
-        return O
-    
-
+        ctx.probe_size = probe.size()
+        return O, probe
 
     @staticmethod
     def backward(ctx, dO):
-        Q, K, V, O, _ = ctx.saved_tensors
+        Q, K, V, O, _M = ctx.saved_tensors
         scale = ctx.scale
 
         # Compute in fp32 for stability
@@ -449,7 +448,7 @@ class TritonAttention(torch.autograd.Function):
         # scores = (q * scale) @ k^T
         scores = torch.matmul(q32 * scale, k32.transpose(-2, -1))  # [B,H,N,N]
         P = torch.softmax(scores, dim=-1)  # [B,H,N,N]
-        M = torch.logsumexp(scores, dim=-1)
+        M = torch.logsumexp(scores, dim=-1).contiguous()  # 
         # --- Backward math ---
         # dV = P^T @ dO
         dV32 = torch.matmul(P.transpose(-2, -1), dO32)  # [B,H,D,N]?
@@ -474,7 +473,7 @@ class TritonAttention(torch.autograd.Function):
 
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
 
-        """D = torch.empty_like(M)
+        _D = torch.empty_like(M)
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
@@ -482,9 +481,7 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
         
-        # create D in torch instead
-        
-        
+        """
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
         # Fix KV and iterate through all the Q blocks
@@ -506,7 +503,18 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
-        return dQ, gk, gv
+                
+        probe_out = torch.zeros(ctx.probe_size, device=Q.device, dtype=torch.float32)
+        p = []
+        for a, b in ((dQ, gq), (D, _D), (M, _M)):
+            diff = (a.float() - b.float()).abs()
+            rmax, absmax = diff.max(), (diff / (b.float().abs() + 1e-12)).max()
+            p.append(rmax)
+            p.append(absmax)
+        p = torch.stack(p)
+        probe_out[:p.size(0)] = p
+        
+        return dQ, gk, gv, probe_out
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):

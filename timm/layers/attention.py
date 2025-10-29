@@ -81,7 +81,9 @@ class Attention(nn.Module):
         q, k = self.q_norm(q), self.k_norm(k)
         
         if self.fused_attn == 2:
-            x = sdpa_triton_fa(q, k, v)
+            probe = torch.zeros(8, device=q.device, dtype=torch.float32, requires_grad=True)
+            x, _ = sdpa_triton_fa(q, k, v, probe)
+            self.p = probe.grad
         elif self.fused_attn == 1:
             x = F.scaled_dot_product_attention(
                 q, k, v,
