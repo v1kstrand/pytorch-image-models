@@ -69,6 +69,7 @@ class Attention(nn.Module):
         self.norm = norm_layer(dim, **dd) if scale_norm else nn.Identity()
         self.proj = nn.Linear(dim, dim, bias=proj_bias, **dd)
         self.proj_drop = nn.Dropout(proj_drop)
+        self.probe = torch.zeros(8, dtype=torch.float32, requires_grad=True)
 
     def forward(
             self,
@@ -81,9 +82,9 @@ class Attention(nn.Module):
         q, k = self.q_norm(q), self.k_norm(k)
         
         if self.fused_attn == 2:
-            probe = torch.zeros(8, device=q.device, dtype=torch.float32, requires_grad=True)
-            x, _ = sdpa_triton_fa(q, k, v, probe)
-            self.p = probe.grad
+            
+            x, _ = sdpa_triton_fa(q, k, v, self.probe)
+            self.p = self.probe.grad.copy()
         elif self.fused_attn == 1:
             x = F.scaled_dot_product_attention(
                 q, k, v,
