@@ -504,14 +504,18 @@ class TritonAttention(torch.autograd.Function):
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
                 
-        probe_out = torch.zeros(ctx.probe_size, device=Q.device, dtype=torch.float32)
-        p = []
-        for a, b in ((dQ, gq), (D, _D), (M, _M)):
+                
+        def comp(a, b):
             diff = (a.float() - b.float()).abs()
-            rmax, absmax = diff.max(), (diff / (b.float().abs() + 1e-12)).max()
-            p.append(rmax)
-            p.append(absmax)
-        p = torch.stack(p)
+            return [diff.max(), (diff / (b.float().abs() + 1e-12)).max()]
+
+        
+        max_dQ = torch.tensor(comp(dQ, gq), device=Q.device)
+        max_D  = torch.tensor(comp(D, _D),  device=Q.device)
+        max_M  = torch.tensor(comp(M, _M),  device=Q.device)
+        p = torch.cat((max_dQ, max_D, max_M), dim=0)
+                
+        probe_out = torch.zeros(ctx.probe_size, device=Q.device, dtype=torch.float32)
         probe_out[:p.size(0)] = p
         
         return dQ, gk, gv, probe_out
