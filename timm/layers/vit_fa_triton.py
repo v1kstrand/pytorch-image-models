@@ -411,7 +411,7 @@ class TritonAttention(torch.autograd.Function):
         
         softmax_scale = 1 / (HEAD_DIM**0.5)
         O = torch.empty_like(Q)
-        M = torch.empty(
+        M = torch.zeros(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         )        
         grid = lambda args: (
@@ -470,7 +470,7 @@ class TritonAttention(torch.autograd.Function):
 
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
 
-        _D = torch.empty_like(M)
+        _D = torch.zeros_like(M)
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
