@@ -404,7 +404,7 @@ def _attn_bwd_dq(
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, V, probe):
+    def forward(ctx, Q, K, V):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         comp_torch = _sdpa_comp_dtype(Q)
         comp_triton = _triton_compute_dtype(comp_torch)
@@ -424,7 +424,6 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM, 
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
-        ctx.probe_size = probe.size()
         ctx.softmax_scale = softmax_scale
         ctx.comp_triton = comp_triton
         ctx.scale = softmax_scale
@@ -502,7 +501,7 @@ class TritonAttention(torch.autograd.Function):
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
                 
-        def comp(a, b):
+        """def comp(a, b):
             diff = (a - b).abs().to(torch.float32)
             return torch.stack((diff.amax(), diff.mean()))  # tensor on same device as a/b
 
@@ -511,7 +510,8 @@ class TritonAttention(torch.autograd.Function):
         max_M  = comp(M,  _M)          # shape [2], GPU
         p      = torch.cat((max_dQ, max_D, max_M), dim=0)   # shape [6], GPU
         
-        return dQ, gk, gv, p
+        return dQ, gk, gv, p"""
+        return dQ, gk, gv
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
