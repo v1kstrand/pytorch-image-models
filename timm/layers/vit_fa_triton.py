@@ -477,7 +477,7 @@ class TritonAttention(torch.autograd.Function):
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
-            O, dO, D, *O.stride(), *dO.stride(),
+            O, dO, _D, *O.stride(), *dO.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
         
