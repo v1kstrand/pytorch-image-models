@@ -505,10 +505,11 @@ class TritonAttention(torch.autograd.Function):
         )
                 
                 
-        def comp(a, b, eps=1e-12):
-            num = (a.float() - b.float()).pow(2).sum().sqrt()
-            den = (a.float().pow(2).sum().sqrt() + b.float().pow(2).sum().sqrt()).clamp_min(eps)
-            return (num / den)
+        def comp(a, b):
+            diff = (a - b).abs()
+            absmax = diff.max()
+            mean = diff.mean()
+            return [absmax, mean]
 
         
         max_dQ = torch.tensor(comp(dQ, gq), device=Q.device)
