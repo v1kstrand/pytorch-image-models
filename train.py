@@ -1080,7 +1080,6 @@ def main(override_args=None):
                 num_updates_total=num_epochs * updates_per_epoch,
                 naflex_mode=naflex_mode,
             )
-            update_config_file(args, "resume", True)
 
             if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                 if utils.is_primary(args):
@@ -1394,6 +1393,7 @@ def train_one_epoch(
         # synchronize avg loss, each process keeps its own running avg
         loss_avg = torch.tensor([loss_avg], device=device, dtype=torch.float32)
         loss_avg = utils.reduce_tensor(loss_avg, args.world_size).item()
+    update_config_file(args, "resume", True)
     return OrderedDict([('loss', loss_avg)])
 
 
