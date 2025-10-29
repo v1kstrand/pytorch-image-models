@@ -5,6 +5,8 @@ import triton
 import triton.language as tl
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
+import torch._dynamo as dynamo
+
 SDPA_BACKEND = SDPBackend.MATH
 
 GROUP_NM_SWEEP = [4, 8]
@@ -402,21 +404,16 @@ def _attn_bwd_dq(
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, V):
+    def forward(ctx, Q, K, V, probe):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         comp_torch = _sdpa_comp_dtype(Q)
         comp_triton = _triton_compute_dtype(comp_torch)
         
         softmax_scale = 1 / (HEAD_DIM**0.5)
         O = torch.empty_like(Q)
-        M = torch.empty(
+        M = torch.zeros(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
-        )
-        
-        ctx.save_for_backward(Q, K, V, O, M)
-        ctx.softmax_scale = softmax_scale
-        ctx.comp_triton = comp_triton
-        
+        )        
         grid = lambda args: (
             triton.cdiv(SEQ_LEN, args["BLOCK_Q"]),
             BATCH_SIZE * NUM_HEADS,
@@ -427,82 +424,61 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM, 
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
+        ctx.softmax_scale = softmax_scale
+        ctx.comp_triton = comp_triton
+        ctx.scale = softmax_scale
+        ctx.save_for_backward(Q, K, V, O, M)
         return O
-    
-    def _forward(ctx, Q, K, V):
-        head_dim = Q.size(-1)
-        scale = 1.0 / (head_dim ** 0.5)
-
-        # Stateless forward (no grad graph kept)
-        with torch.no_grad():
-            attn_scores = (Q * scale) @ K.transpose(-2, -1)      # [B,H,N,N]
-            attn = attn_scores.softmax(dim=-1)                   # [B,H,N,N]
-            O = attn @ V                                         # [B,H,N,D]
-
-        # Save inputs + scale for recompute
-        ctx.scale = scale
-        ctx.save_for_backward(Q, K, V)
-        return O
-        gq = gk = gv = None
-
-        # Recompute with grad enabled; disable autocast and use fp32 for stability
-        with torch.enable_grad():
-            q = Q.detach().to(torch.float32).requires_grad_(True)
-            k = K.detach().to(torch.float32).requires_grad_(True)
-            v = V.detach().to(torch.float32).requires_grad_(True)
-
-            attn_scores = (q * ctx.scale) @ k.transpose(-2, -1)
-            attn = attn_scores.softmax(dim=-1)
-            y = attn @ v
-
-            gq, gk, gv = torch.autograd.grad(
-                outputs=y,
-                inputs=(q, k, v),
-                grad_outputs=dO.to(torch.float32),
-                retain_graph=False,
-                allow_unused=False,
-            )
-
-        return gq, gk, gv
 
     @staticmethod
     def backward(ctx, dO):
-        Q, K, V, O, M = ctx.saved_tensors
-        gq = gk = gv = None
+        Q, K, V, O, _M = ctx.saved_tensors
+        scale = ctx.scale
 
-        # Recompute with grad enabled; disable autocast and use fp32 for stability
-        with torch.enable_grad():
-            q = Q.clone().detach().to(torch.float32)
-            k = K.clone().detach().to(torch.float32)
-            v = V.clone().detach().to(torch.float32)
+        # Compute in fp32 for stability
+        q32 = Q.to(torch.float32)
+        k32 = K.to(torch.float32)
+        v32 = V.to(torch.float32)
+        dO32 = dO.to(torch.float32)
 
-            attn_scores = (q * ctx.scale) @ k.transpose(-2, -1)
-            attn = attn_scores.softmax(dim=-1)
-            y = attn @ v
+        # --- Recompute softmax probabilities P ---
+        # scores = (q * scale) @ k^T
+        scores = torch.matmul(q32 * scale, k32.transpose(-2, -1))  # [B,H,N,N]
+        P = torch.softmax(scores, dim=-1)  # [B,H,N,N]
+        M = torch.logsumexp(scores, dim=-1).contiguous()  # 
+        # --- Backward math ---
+        # dV = P^T @ dO
+        dV32 = torch.matmul(P.transpose(-2, -1), dO32)  # [B,H,D,N]?
+        # dP = dO @ V^T
+        dP = torch.matmul(dO32, v32.transpose(-2, -1))  # [B,H,N,N]
 
-            gq, gk, gv = torch.autograd.grad(
-                outputs=y,
-                inputs=(q, k, v),
-                grad_outputs=dO.to(torch.float32),
-                retain_graph=False,
-                allow_unused=False,
-            )
+        # ds = (dP - sum(dP*P, -1, keepdim=True)) * P
+        # (softmax backward)
+        S = (dP * P).sum(dim=-1, keepdim=True)
+        ds = (dP - S) * P  # [B,H,N,N]
 
-        return gq, gk, gv
-
-        dQ = torch.empty_like(Q)
-        dK = torch.empty_like(K)
-        dV = torch.empty_like(V)
+        # dQ = (ds @ K) * scale
+        dQ32 = torch.matmul(ds, k32) * scale  # [B,H,N,D]
+        # dK = (ds^T @ Q) * scale
+        dK32 = torch.matmul(ds.transpose(-2, -1), q32) * scale  # [B,H,N,D]
+        gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
+        D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1).contiguous()  # [B,H,N]
+        
+        dQ = torch.zeros_like(Q)
+        dK = torch.zeros_like(K)
+        dV = torch.zeros_like(V)
 
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
-
-        D = torch.empty_like(M)
+        
+        
+        _D = torch.zeros_like(M)
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
-            O, dO, D, *O.stride(), *dO.stride(),
+            O, dO, _D, *O.stride(), *dO.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
+        """
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
         # Fix KV and iterate through all the Q blocks
@@ -513,6 +489,7 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
+        """
 
         dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                     BATCH_SIZE * NUM_HEADS)
@@ -523,11 +500,23 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
-        return dQ, dK, dV
+                
+        def comp(a, b):
+            diff = (a - b).abs().to(torch.float32)
+            return torch.stack((diff.amax(), diff.mean()))  # tensor on same device as a/b
+
+        max_dQ = comp(dQ, gq)          # shape [2], GPU
+        max_D  = comp(D,  _D)          # shape [2], GPU
+        max_M  = comp(M,  _M)          # shape [2], GPU
+        p      = torch.cat((max_dQ, max_D, max_M), dim=0)   # shape [6], GPU
+        
+        return dQ, gk, gv, p
+        #return dQ, gk, gv
     
     
-def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
-    #Q = Q.contiguous()
-    #K = K.contiguous()
-    #V = V.contiguous()
+def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
+    return TritonAttention.apply(Q, K, V, probe)
+    
+    
+def _sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
     return TritonAttention.apply(Q, K, V)
