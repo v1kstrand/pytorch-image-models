@@ -469,7 +469,8 @@ class TritonAttention(torch.autograd.Function):
         dV = torch.zeros_like(V)
 
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
-
+        
+        """
         _D = torch.zeros_like(M)
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
@@ -478,7 +479,6 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
         
-        """
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
         # Fix KV and iterate through all the Q blocks
@@ -495,7 +495,7 @@ class TritonAttention(torch.autograd.Function):
                     BATCH_SIZE * NUM_HEADS)
         
         _attn_bwd_dq[dq_grid](
-            Q, K, V, dO, dQ, _M, _D,
+            Q, K, V, dO, dQ, M, D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dQ.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
