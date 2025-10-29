@@ -437,10 +437,10 @@ class TritonAttention(torch.autograd.Function):
         scale = ctx.scale
 
         # Compute in fp32 for stability
-        q32 = Q.to(torch.float32)
-        k32 = K.to(torch.float32)
-        v32 = V.to(torch.float32)
-        dO32 = dO.to(torch.float32)
+        q32 = Q.clone().detach().to(torch.float32)
+        k32 = K.clone().detach().to(torch.float32)
+        v32 = V.clone().detach().to(torch.float32)
+        dO32 = dO.clone().detach().to(torch.float32)
 
         # --- Recompute softmax probabilities P ---
         # scores = (q * scale) @ k^T
