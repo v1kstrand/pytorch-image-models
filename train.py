@@ -1262,7 +1262,7 @@ def train_one_epoch(
                 
                 for i, block in enumerate(model.blocks):
                     g = block.attn.probe.grad
-                    print(f"grad block {i}: {list(g)}")
+                    print(f"grad block {i}: {list(map(float, g))}")
                     block.attn.probe.grad = None
                 
                 if need_update:
