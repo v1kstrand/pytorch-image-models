@@ -82,7 +82,7 @@ class Attention(nn.Module):
         q, k = self.q_norm(q), self.k_norm(k)
         
         if self.fused_attn == 2:
-            x, _ = sdpa_triton_fa(q, k, v, self.probe)
+            x = sdpa_triton_fa(q, k, v, self.probe)
         elif self.fused_attn == 1:
             x = F.scaled_dot_product_attention(
                 q, k, v,

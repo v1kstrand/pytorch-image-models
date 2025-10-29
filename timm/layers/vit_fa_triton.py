@@ -431,7 +431,7 @@ class TritonAttention(torch.autograd.Function):
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
         ctx.probe_size = probe.size()
-        return O, probe
+        return O
 
     @staticmethod
     def backward(ctx, dO):
