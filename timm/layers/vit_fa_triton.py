@@ -510,7 +510,6 @@ class TritonAttention(torch.autograd.Function):
             absmax = diff.max()
             mean = diff.mean()
             return [absmax, mean]
-
         
         max_dQ = torch.tensor(comp(dQ, gq), device=Q.device)
         max_D  = torch.tensor(comp(D, _D),  device=Q.device)
