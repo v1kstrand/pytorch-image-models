@@ -1080,6 +1080,7 @@ def main(override_args=None):
                 num_updates_total=num_epochs * updates_per_epoch,
                 naflex_mode=naflex_mode,
             )
+            update_config_file(args, "resume", True)
 
             if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                 if utils.is_primary(args):
@@ -1377,7 +1378,6 @@ def train_one_epoch(
         if saver is not None and args.recovery_interval and (
                 (update_idx + 1) % args.recovery_interval == 0):
             saver.save_recovery(epoch, batch_idx=update_idx)
-        update_config_file(args, "resume", True)
 
         if lr_scheduler is not None:
             lr_scheduler.step_update(num_updates=num_updates, metric=losses_m.avg)
