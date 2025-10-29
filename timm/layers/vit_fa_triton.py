@@ -500,7 +500,6 @@ class TritonAttention(torch.autograd.Function):
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
         
-               
         def comp(a, b):
             diff = (a - b).abs().to(torch.float32)
             return torch.stack((diff.amax(), diff.mean()))  
