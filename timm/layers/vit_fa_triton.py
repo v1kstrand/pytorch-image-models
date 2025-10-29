@@ -495,7 +495,7 @@ class TritonAttention(torch.autograd.Function):
                     BATCH_SIZE * NUM_HEADS)
         
         _attn_bwd_dq[dq_grid](
-            Q, K, V, dO, dQ, _M, _D,
+            Q, K, V, dO, dQ, M, _D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dQ.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
