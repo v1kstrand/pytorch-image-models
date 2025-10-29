@@ -1260,10 +1260,10 @@ def train_one_epoch(
             else:
                 _loss.backward(create_graph=second_order)
                 
-                """for i, block in enumerate(model.blocks):
+                for i, block in enumerate(model.blocks):
                     g = block.attn.probe.grad
                     print(f"grad block {i}: {list(map(float, g))}")
-                    block.attn.probe.grad = None"""
+                    block.attn.probe.grad = None
                 
                 if need_update:
                     if args.clip_grad is not None:

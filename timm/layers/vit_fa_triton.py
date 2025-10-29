@@ -501,7 +501,7 @@ class TritonAttention(torch.autograd.Function):
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
                 
-        """def comp(a, b):
+        def comp(a, b):
             diff = (a - b).abs().to(torch.float32)
             return torch.stack((diff.amax(), diff.mean()))  # tensor on same device as a/b
 
@@ -510,13 +510,13 @@ class TritonAttention(torch.autograd.Function):
         max_M  = comp(M,  _M)          # shape [2], GPU
         p      = torch.cat((max_dQ, max_D, max_M), dim=0)   # shape [6], GPU
         
-        return dQ, gk, gv, p"""
-        return dQ, gk, gv
+        return dQ, gk, gv, p
+        #return dQ, gk, gv
     
     
-"""def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
-    return TritonAttention.apply(Q, K, V, probe)"""
+def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
+    return TritonAttention.apply(Q, K, V, probe)
     
     
-def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
+def _sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
     return TritonAttention.apply(Q, K, V)
