@@ -518,5 +518,5 @@ class TritonAttention(torch.autograd.Function):
     return TritonAttention.apply(Q, K, V, probe)"""
     
     
-def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
-    return TritonAttention.apply(Q, K, V, probe)
+def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
+    return TritonAttention.apply(Q, K, V)
