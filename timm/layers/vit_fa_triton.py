@@ -469,7 +469,7 @@ class TritonAttention(torch.autograd.Function):
         # ds = (dP - sum(dP*P, -1, keepdim=True)) * P
         # (softmax backward)
         S = (dP * P).sum(dim=-1, keepdim=True)
-        ds = (dP - _D) * P  # [B,H,N,N]
+        ds = (dP - _D.unsqueeze(-1)) * P  # [B,H,N,N]
 
         # dQ = (ds @ K) * scale
         dQ32 = torch.matmul(ds, k32) * scale  # [B,H,N,D]
