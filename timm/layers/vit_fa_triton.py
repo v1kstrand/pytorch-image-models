@@ -420,7 +420,6 @@ class TritonAttention(torch.autograd.Function):
         ctx.comp_triton = comp_triton
         ctx.scale = softmax_scale
         
-              
         grid = lambda args: (
             triton.cdiv(SEQ_LEN, args["BLOCK_Q"]),
             BATCH_SIZE * NUM_HEADS,
@@ -450,7 +449,7 @@ class TritonAttention(torch.autograd.Function):
         scores = torch.matmul(q32 * scale, k32.transpose(-2, -1))  # [B,H,N,N]
         P = torch.softmax(scores, dim=-1)  # [B,H,N,N]
         
-        #M = torch.logsumexp(scores, dim=-1).contiguous()  # 
+        M = torch.logsumexp(scores, dim=-1).contiguous()  # 
         
         # --- Backward math ---
         # dV = P^T @ dO
@@ -469,7 +468,7 @@ class TritonAttention(torch.autograd.Function):
         dK32 = torch.matmul(ds.transpose(-2, -1), q32) * scale  # [B,H,N,D]
         gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
         
-        """
+        
         D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1).contiguous()  # [B,H,N]
         
         dQ = torch.empty_like(Q)
@@ -477,7 +476,7 @@ class TritonAttention(torch.autograd.Function):
         dV = torch.empty_like(V)
 
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
-
+        """
         _D = torch.empty_like(M)
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
@@ -495,7 +494,7 @@ class TritonAttention(torch.autograd.Function):
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dK.stride(), *dV.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
-        )
+        )"""
 
         dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                     BATCH_SIZE * NUM_HEADS)
@@ -507,6 +506,7 @@ class TritonAttention(torch.autograd.Function):
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
         
+        """
         def comp(a, b):
             diff = (a - b).abs().to(torch.float32)
             return torch.stack((diff.amax(), diff.mean()))  
@@ -518,7 +518,7 @@ class TritonAttention(torch.autograd.Function):
         max_M  = comp(M, _M)
         p = torch.cat((max_dQ, max_dK, max_dV, max_D, max_M), dim=0)"""
         
-        return gq, gk, gv
+        return dQ, gk, gv
 
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
     #Q = Q.contiguous()
