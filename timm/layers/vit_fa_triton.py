@@ -457,8 +457,8 @@ class TritonAttention(torch.autograd.Function):
         # scores = (q * scale) @ k^T
         scores = torch.matmul(q32 * scale, k32.transpose(-2, -1))  # [B,H,N,N]
         #P = torch.softmax(scores, dim=-1)  # [B,H,N,N]
-        P = torch.exp(scores.to(torch.float32) - _M.unsqueeze(-1))
         
+        P = torch.exp(scores.to(torch.float32) - _M.unsqueeze(-1))
         #M = torch.logsumexp(scores, dim=-1).contiguous()  # 
         
         # --- Backward math ---
