@@ -459,7 +459,7 @@ class TritonAttention(torch.autograd.Function):
         #P = torch.softmax(scores, dim=-1)  # [B,H,N,N]
         
         P = torch.exp(scores.to(torch.float32) - _M.unsqueeze(-1))
-        #M = torch.logsumexp(scores, dim=-1).contiguous()  # 
+        #M = torch.logsumexp(scores, dim=-1).contiguous()  
         
         # --- Backward math ---
         # dV = P^T @ dO
@@ -469,7 +469,7 @@ class TritonAttention(torch.autograd.Function):
 
         # ds = (dP - sum(dP*P, -1, keepdim=True)) * P
         # (softmax backward)
-        S = (dP * P).sum(dim=-1, keepdim=True)
+        #S = (dP * P).sum(dim=-1, keepdim=True)
         ds = (dP - _D.unsqueeze(-1)) * P  # [B,H,N,N]
 
         # dQ = (ds @ K) * scale
