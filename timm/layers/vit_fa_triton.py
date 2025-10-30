@@ -447,9 +447,9 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
         
-        dQ = torch.empty_like(Q)
-        dK = torch.empty_like(K)
-        dV = torch.empty_like(V)
+        dQ = torch.zeros_like(Q)
+        dK = torch.zeros_like(K)
+        dV = torch.zeros_like(V)
 
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
