@@ -413,7 +413,13 @@ class TritonAttention(torch.autograd.Function):
         O = torch.empty_like(Q)
         M = torch.empty(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
-        )        
+        )
+        
+        ctx.save_for_backward(Q, K, V, O, M)
+        ctx.softmax_scale = softmax_scale
+        ctx.comp_triton = comp_triton
+        ctx.scale = softmax_scale
+        
         grid = lambda args: (
             triton.cdiv(SEQ_LEN, args["BLOCK_Q"]),
             BATCH_SIZE * NUM_HEADS,
@@ -425,10 +431,6 @@ class TritonAttention(torch.autograd.Function):
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
         ctx.probe_size = probe.size()
-        ctx.softmax_scale = softmax_scale
-        ctx.comp_triton = comp_triton
-        ctx.scale = softmax_scale
-        ctx.save_for_backward(Q, K, V, O, M)
         return O
 
     @staticmethod
@@ -465,9 +467,9 @@ class TritonAttention(torch.autograd.Function):
         gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
         D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1).contiguous()  # [B,H,N]
         
-        dQ = torch.zeros_like(Q)
-        dK = torch.zeros_like(K)
-        dV = torch.zeros_like(V)
+        dQ = torch.empty_like(Q)
+        dK = torch.empty_like(K)
+        dV = torch.empty_like(V)
 
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
 
@@ -475,10 +477,11 @@ class TritonAttention(torch.autograd.Function):
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
-            O, dO, _D, *O.stride(), *dO.stride(),
+            O, dO, D, *O.stride(), *dO.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
         
+        """
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
         # Fix KV and iterate through all the Q blocks
@@ -489,6 +492,7 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
+        """
 
         dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                     BATCH_SIZE * NUM_HEADS)
@@ -499,19 +503,23 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
-        
+                
+                
         def comp(a, b):
-            diff = (a - b).abs().to(torch.float32)
-            return torch.stack((diff.amax(), diff.mean()))  
+            diff = (a - b).abs()
+            absmax = diff.max()
+            mean = diff.mean()
+            return [absmax, mean]
         
-        max_dQ = comp(dQ, gq)
-        max_dK = comp(dK, gk)
-        max_dV = comp(dV, gv)
-        max_D  = comp(D, _D)
-        max_M  = comp(M, _M)
-        p = torch.cat((max_dQ, max_dK, max_dV, max_D, max_M), dim=0)
+        max_dQ = torch.tensor(comp(dQ, gq), device=Q.device)
+        max_D  = torch.tensor(comp(D, _D),  device=Q.device)
+        max_M  = torch.tensor(comp(M, _M),  device=Q.device)
+        p = torch.cat((max_dQ, max_D, max_M), dim=0)
+                
+        probe_out = torch.zeros(ctx.probe_size, device=Q.device, dtype=torch.float32)
+        probe_out[:p.size(0)] = p
         
-        return gq, gk, gv, p
+        return dQ, gk, gv, probe_out
     
     
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
