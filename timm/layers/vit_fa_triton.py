@@ -404,7 +404,7 @@ def _attn_bwd_dq(
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, V, probe):
+    def forward(ctx, Q, K, V):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         comp_torch = _sdpa_comp_dtype(Q)
         comp_triton = _triton_compute_dtype(comp_torch)
@@ -431,7 +431,7 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM, 
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
-        ctx.probe_size = probe.size()
+        #ctx.probe_size = probe.size()
         return O
 
     @staticmethod
@@ -449,7 +449,9 @@ class TritonAttention(torch.autograd.Function):
         # scores = (q * scale) @ k^T
         scores = torch.matmul(q32 * scale, k32.transpose(-2, -1))  # [B,H,N,N]
         P = torch.softmax(scores, dim=-1)  # [B,H,N,N]
-        M = torch.logsumexp(scores, dim=-1).contiguous()  # 
+        
+        #M = torch.logsumexp(scores, dim=-1).contiguous()  # 
+        
         # --- Backward math ---
         # dV = P^T @ dO
         dV32 = torch.matmul(P.transpose(-2, -1), dO32)  # [B,H,D,N]?
@@ -466,6 +468,8 @@ class TritonAttention(torch.autograd.Function):
         # dK = (ds^T @ Q) * scale
         dK32 = torch.matmul(ds.transpose(-2, -1), q32) * scale  # [B,H,N,D]
         gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
+        
+        """
         D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1).contiguous()  # [B,H,N]
         
         dQ = torch.empty_like(Q)
@@ -512,12 +516,17 @@ class TritonAttention(torch.autograd.Function):
         max_dV = comp(dV, gv)
         max_D  = comp(D, _D)
         max_M  = comp(M, _M)
-        p = torch.cat((max_dQ, max_dK, max_dV, max_D, max_M), dim=0)
+        p = torch.cat((max_dQ, max_dK, max_dV, max_D, max_M), dim=0)"""
         
-        return gq, gk, gv, p
+        return gq, gk, gv
+
+def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
+    #Q = Q.contiguous()
+    #K = K.contiguous()
+    #V = V.contiguous()
+    return TritonAttention.apply(Q, K, V)
     
-    
-def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
+def _sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
     #Q = Q.contiguous()
     #K = K.contiguous()
     #V = V.contiguous()

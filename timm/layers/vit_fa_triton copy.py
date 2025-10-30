@@ -413,7 +413,14 @@ class TritonAttention(torch.autograd.Function):
         O = torch.empty_like(Q)
         M = torch.empty(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
-        )        
+        )  
+        
+        ctx.save_for_backward(Q, K, V, O, M)
+        ctx.softmax_scale = softmax_scale
+        ctx.comp_triton = comp_triton
+        ctx.scale = softmax_scale
+        
+              
         grid = lambda args: (
             triton.cdiv(SEQ_LEN, args["BLOCK_Q"]),
             BATCH_SIZE * NUM_HEADS,
@@ -425,10 +432,6 @@ class TritonAttention(torch.autograd.Function):
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
         ctx.probe_size = probe.size()
-        ctx.softmax_scale = softmax_scale
-        ctx.comp_triton = comp_triton
-        ctx.scale = softmax_scale
-        ctx.save_for_backward(Q, K, V, O, M)
         return O
 
     @staticmethod
@@ -465,9 +468,9 @@ class TritonAttention(torch.autograd.Function):
         gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
         D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1).contiguous()  # [B,H,N]
         
-        dQ = torch.zeros_like(Q)
-        dK = torch.zeros_like(K)
-        dV = torch.zeros_like(V)
+        dQ = torch.empty_like(Q)
+        dK = torch.empty_like(K)
+        dV = torch.empty_like(V)
 
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
 
