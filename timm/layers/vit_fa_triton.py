@@ -446,7 +446,7 @@ class TritonAttention(torch.autograd.Function):
             O, dO, _D, *O.stride(), *dO.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
-
+        """
         # Compute in fp32 for stability
         q32 = Q.to(torch.float32)
         k32 = K.to(torch.float32)
@@ -479,7 +479,7 @@ class TritonAttention(torch.autograd.Function):
         
         gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
         
-        
+        """
         #D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1).contiguous()  # [B,H,N]
         
         dQ = torch.empty_like(Q)
@@ -497,19 +497,19 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
-        """
+        
         dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                     BATCH_SIZE * NUM_HEADS)
         
         _attn_bwd_dq[dq_grid](
-            Q, K, V, dO, dQ, M, D,
+            Q, K, V, dO, dQ, _M, _D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dQ.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
         
 
-        def comp(a, b):
+        """def comp(a, b):
             diff = (a - b).abs().to(torch.float32)
             return torch.stack((diff.amax(), diff.mean()))  
         
@@ -520,7 +520,7 @@ class TritonAttention(torch.autograd.Function):
         max_M  = comp(M, _M)
         p = torch.cat((max_dQ, max_dK, max_dV, max_D, max_M), dim=0)"""
         
-        return gq, gk, dV
+        return dQ, dK, dV
 
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
     #Q = Q.contiguous()
