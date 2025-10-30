@@ -480,7 +480,7 @@ class TritonAttention(torch.autograd.Function):
         gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
         
         
-        D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1).contiguous()  # [B,H,N]
+        #D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1).contiguous()  # [B,H,N]
         
         dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
@@ -492,7 +492,7 @@ class TritonAttention(torch.autograd.Function):
         # Fix KV and iterate through all the Q blocks
         
         _attn_bwd_dk_dv[dkdv_grid](
-            Q, K, V, dO, dK, dV, M, D,
+            Q, K, V, dO, dK, dV, _M, _D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dK.stride(), *dV.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
