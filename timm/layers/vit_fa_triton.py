@@ -520,7 +520,7 @@ class TritonAttention(torch.autograd.Function):
         max_M  = comp(M, _M)
         p = torch.cat((max_dQ, max_dK, max_dV, max_D, max_M), dim=0)"""
         
-        return dQ, gk, gv
+        return gq, gk, gv
 
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
     #Q = Q.contiguous()
