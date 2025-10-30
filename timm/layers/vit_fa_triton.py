@@ -436,7 +436,16 @@ class TritonAttention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, _M = ctx.saved_tensors
+        BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         scale = ctx.scale
+        
+        _D = torch.empty_like(_M)
+        pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
+                         BATCH_SIZE * NUM_HEADS)
+        _attn_bwd_preprocess[pre_grid](
+            O, dO, _D, *O.stride(), *dO.stride(),
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
+        )
 
         # Compute in fp32 for stability
         q32 = Q.to(torch.float32)
@@ -460,12 +469,13 @@ class TritonAttention(torch.autograd.Function):
         # ds = (dP - sum(dP*P, -1, keepdim=True)) * P
         # (softmax backward)
         S = (dP * P).sum(dim=-1, keepdim=True)
-        ds = (dP - S) * P  # [B,H,N,N]
+        ds = (dP - _D) * P  # [B,H,N,N]
 
         # dQ = (ds @ K) * scale
         dQ32 = torch.matmul(ds, k32) * scale  # [B,H,N,D]
         # dK = (ds^T @ Q) * scale
         dK32 = torch.matmul(ds.transpose(-2, -1), q32) * scale  # [B,H,N,D]
+        
         gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
         
         
@@ -475,15 +485,7 @@ class TritonAttention(torch.autograd.Function):
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
 
-        BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         """
-        _D = torch.empty_like(M)
-        pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
-                         BATCH_SIZE * NUM_HEADS)
-        _attn_bwd_preprocess[pre_grid](
-            O, dO, _D, *O.stride(), *dO.stride(),
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
-        )
         
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
