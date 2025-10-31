@@ -1001,7 +1001,7 @@ def main(override_args=None):
         
         exp_args_path = os.path.join(output_dir, 'exp_args.yaml')
         if os.path.exists(exp_args_path):
-            prev_exp_args_path = os.path.join(output_dir, 'prev_exp_args.yaml')
+            prev_exp_args_path = os.path.join(output_dir, 'exp_args_prev.yaml')
             os.rename(exp_args_path, prev_exp_args_path)
         
         with open(exp_args_path, 'w', encoding='utf-8') as f:
