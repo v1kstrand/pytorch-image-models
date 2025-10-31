@@ -437,14 +437,6 @@ group.add_argument('--return-model', action='store_true', default=False,
 group.add_argument('--base-dir', default="/notebooks/output/train", type=str)
 group.add_argument('--yaml-config-path', default="/notebooks/params_timm.yaml", type=str)
 
-def _parse_args():
-    # Do we have a config file to parse?
-    args, _ = parser.parse_known_args()
-
-    # Cache the args as a text string to save them in the output dir later
-    args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
-    return args, args_text
-
 def update_config_file(args, key, value):
     r_yaml = YAML(typ="rt")
     r_yaml.preserve_quotes = True
@@ -461,7 +453,7 @@ def update_config_file(args, key, value):
 def main(override_args=None):
     override_args = override_args or {}
     utils.setup_default_logging()
-    args, args_text = _parse_args()
+    args, _ = parser.parse_known_args()
     
     for k, v in override_args.items():
         print(f"Setting {k} to {v}")
@@ -1013,6 +1005,7 @@ def main(override_args=None):
             os.rename(exp_args_path, prev_exp_args_path)
         
         with open(exp_args_path, 'w', encoding='utf-8') as f:
+            args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
             f.write(args_text)
 
         if args.log_wandb:
