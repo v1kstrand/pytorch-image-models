@@ -257,35 +257,47 @@ def _attn_bwd_dk_dv(
     V_block = tl.load(V_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     offs_kv  = start_kv + tl.arange(0, BLOCK_KV)
     kv_valid = offs_kv < SEQ_LEN
-    q_valid  = offs_q < SEQ_LEN
     
-    # Loop over Q tiles
     num_steps = tl.cdiv(SEQ_LEN, BLOCK_Q)
     for qi in range(0, num_steps):
-        qT_block = tl.load(Q_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s
-        dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
-        qT_block = tl.where(q_valid[None, :], qT_block, 0)
-        dO_block = tl.where(q_valid[:, None], dO_block, 0)
-        
         start_q = qi * BLOCK_Q
         offs_q  = start_q + tl.arange(0, BLOCK_Q)
+        q_valid = offs_q < SEQ_LEN               # <-- define inside loop for this tile
+        mask    = kv_valid[:, None] & q_valid[None, :]
+
+        # loads (boundary_check keeps you memory-safe; q_valid handles logic)
+        qT_block = tl.load(Q_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+        dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+
+        # scale exactly ONCE (see note below about where)
+        qT_block = qT_block * s
+
+        # logically mask Q tile
+        qT_block = tl.where(q_valid[None, :], qT_block, 0)
+        dO_block = tl.where(q_valid[:,   None], dO_block, 0)
+
+        # rowwise M and D for these queries
         m  = tl.load(M + offs_q, mask=q_valid, other=0.0).to(tl.float32)
         Di = tl.load(D + offs_q, mask=q_valid, other=0.0).to(tl.float32)
 
-        S_T = tl.dot(K_block, qT_block)
-        S_T = tl.where(kv_valid[:, None] & q_valid[None, :], S_T, -float("inf"))
-        P_T = tl.exp(S_T.to(tl.float32) - m[None, :])
+        # logits and probs; mask rows (kv) and cols (q) before exp
+        S_T = tl.dot(K_block, qT_block)                     # [BLOCK_KV, BLOCK_Q]
+        S_T = tl.where(mask, S_T, -float("inf"))
+        P_T = tl.exp(S_T.to(tl.float32) - m[None, :])       # masked cols → 0
 
-        # --- dV += Pᵀ @ dO  (match operand dtypes) ---
+        # dV += Pᵀ @ dO
         dV_acc = tl.dot(P_T.to(DTYPE), dO_block, dV_acc)
 
-        # --- dpᵀ = V @ dOᵀ, then dSᵀ = Pᵀ * (dpᵀ - Di) ---
-        dpT = tl.dot(V_block, tl.trans(dO_block)).to(tl.float32)
-        dS_T = (P_T * (dpT - Di[None, :])).to(DTYPE)
+        # dpᵀ = V @ dOᵀ ; dSᵀ = Pᵀ * (dpᵀ − Di)
+        dpT   = tl.dot(V_block, tl.trans(dO_block)).to(tl.float32)
+        dS_T  = (P_T * (dpT - Di[None, :])).to(DTYPE)
+
+        # dK += dSᵀ @ Q  (see scaling note below)
         dK_acc = tl.dot(dS_T, tl.trans(qT_block), dK_acc)
 
+        # advance block pointers
         Q_T_blk = tl.advance(Q_T_blk, (0, BLOCK_Q))
-        dO_blk = tl.advance(dO_blk, (BLOCK_Q, 0))
+        dO_blk  = tl.advance(dO_blk,  (BLOCK_Q, 0))
 
     tl.store(dV_blk, dV_acc.to(dV.type.element_ty), boundary_check=(0, 1))
     tl.store(dK_blk, dK_acc.to(dK.type.element_ty), boundary_check=(0, 1))
