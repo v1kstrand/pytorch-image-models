@@ -235,7 +235,7 @@ def _attn_bwd_dk_dv(
         K + off_bh_k, (SEQ_LEN, HEAD_DIM), (sks, skd),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
     ) #  base,        shape,               strides,    offsets,      block_shape,        order
     V_blk = tl.make_block_ptr( 
-        V + off_bh_v,(SEQ_LEN, HEAD_DIM),(svs, svd),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
+        V + off_bh_v,(SEQ_LEN, HEAD_DIM), (svs, svd),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
     )
     dK_blk = tl.make_block_ptr( 
         dK + off_bh_dk, (SEQ_LEN, HEAD_DIM), (s_dks, s_dkd), (start_kv, 0), (BLOCK_KV, HEAD_DIM), (1, 0)
