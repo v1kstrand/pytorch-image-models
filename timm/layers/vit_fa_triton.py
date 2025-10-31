@@ -256,21 +256,24 @@ def _attn_bwd_dk_dv(
     K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     V_block = tl.load(V_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     offs_kv  = start_kv + tl.arange(0, BLOCK_KV)
+    kv_valid = offs_kv < SEQ_LEN
+    q_valid  = offs_q < SEQ_LEN
     
     # Loop over Q tiles
     num_steps = tl.cdiv(SEQ_LEN, BLOCK_Q)
     for qi in range(0, num_steps):
         qT_block = tl.load(Q_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s
         dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+        qT_block = tl.where(q_valid[None, :], qT_block, 0)
+        dO_block = tl.where(q_valid[:, None], dO_block, 0)
         
         start_q = qi * BLOCK_Q
         offs_q  = start_q + tl.arange(0, BLOCK_Q)
-        m  = tl.load(M + offs_q, mask=offs_q < SEQ_LEN, other=0.0).to(tl.float32)
-        Di = tl.load(D + offs_q, mask=offs_q < SEQ_LEN, other=0.0).to(tl.float32)
+        m  = tl.load(M + offs_q, mask=q_valid, other=0.0).to(tl.float32)
+        Di = tl.load(D + offs_q, mask=q_valid, other=0.0).to(tl.float32)
 
         S_T = tl.dot(K_block, qT_block)
-        kv_valid = offs_kv < SEQ_LEN
-        S_T = tl.where(kv_valid[:, None], S_T, -float("inf"))
+        S_T = tl.where(kv_valid[:, None] & q_valid[None, :], S_T, -float("inf"))
         P_T = tl.exp(S_T.to(tl.float32) - m[None, :])
 
         # --- dV += Pᵀ @ dO  (match operand dtypes) ---
