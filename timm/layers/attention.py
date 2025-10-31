@@ -70,6 +70,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim, bias=proj_bias, **dd)
         self.proj_drop = nn.Dropout(proj_drop)
         #self.probe = nn.Parameter(torch.zeros(10))
+        self.stride = None
 
     def forward(
             self,
@@ -83,6 +84,7 @@ class Attention(nn.Module):
         
         if self.fused_attn == 2:
             #x = sdpa_triton_fa(q, k, v, self.probe)
+            #self.stride = (q.stride(), k.stride(), v.stride())
             x = sdpa_triton_fa(q, k, v)
         elif self.fused_attn == 1:
             x = F.scaled_dot_product_attention(

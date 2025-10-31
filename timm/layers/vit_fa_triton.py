@@ -425,7 +425,7 @@ class TritonAttention(torch.autograd.Function):
         comp_triton = _triton_compute_dtype(comp_torch)
         
         softmax_scale = 1 / (HEAD_DIM**0.5)
-        O = torch.empty_like(Q)
+        O = torch.empty(Q.shape, dtype=Q.dtype, device=Q.device)
         M = torch.empty(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         )  
@@ -453,7 +453,7 @@ class TritonAttention(torch.autograd.Function):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         scale = ctx.scale
         
-        _D = torch.empty_like(_M)
+        _D = torch.empty(_M.shape, dtype=_M.dtype, device=_M.device) 
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
@@ -461,9 +461,9 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
         
-        dQ = torch.zeros_like(Q)
-        dK = torch.zeros_like(K)
-        dV = torch.zeros_like(V)
+        dQ = torch.empty(Q.shape, dtype=Q.dtype, device=Q.device)  # contiguous
+        dK = torch.empty(K.shape, dtype=K.dtype, device=K.device)
+        dV = torch.empty(V.shape, dtype=V.dtype, device=V.device)
 
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
@@ -476,6 +476,7 @@ class TritonAttention(torch.autograd.Function):
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
         
+        """
         # Compute in fp32 for stability
         q32 = Q.to(torch.float32)
         k32 = K.to(torch.float32)
@@ -519,7 +520,7 @@ class TritonAttention(torch.autograd.Function):
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dQ.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
-        )"""
+        )
         
 
         """def comp(a, b):
@@ -536,9 +537,9 @@ class TritonAttention(torch.autograd.Function):
         return dQ, dK, dV
 
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
-    Q = Q.contiguous()
-    K = K.contiguous()
-    V = V.contiguous()
+    #Q = Q.contiguous()
+    #K = K.contiguous()
+    #V = V.contiguous()
     return TritonAttention.apply(Q, K, V)
     
 def _sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
