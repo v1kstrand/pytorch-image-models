@@ -408,15 +408,12 @@ class TritonAttention(torch.autograd.Function):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         comp_torch = _sdpa_comp_dtype(Q)
         comp_triton = _triton_compute_dtype(comp_torch)
-        ctx.save_for_backward(Q, K, V, O, M)
         
         softmax_scale = 1 / (HEAD_DIM**0.5)
         O = torch.empty_like(Q)
         M = torch.empty(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         )  
-        
-        
         ctx.softmax_scale = softmax_scale
         ctx.comp_triton = comp_triton
         ctx.scale = softmax_scale
@@ -431,6 +428,7 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM, 
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
+        ctx.save_for_backward(Q, K, V, O, M)
         #ctx.probe_size = probe.size()
         return O
 
