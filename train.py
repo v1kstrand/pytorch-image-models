@@ -1006,7 +1006,13 @@ def main(override_args=None):
             decreasing=decreasing_metric,
             max_history=args.checkpoint_hist
         )
-        with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
+        
+        exp_args_path = os.path.join(output_dir, 'exp_args.yaml')
+        if os.path.exists(exp_args_path):
+            prev_exp_args_path = os.path.join(output_dir, 'prev_exp_args.yaml')
+            os.rename(exp_args_path, prev_exp_args_path)
+        
+        with open(exp_args_path, 'w', encoding='utf-8') as f:
             f.write(args_text)
 
         if args.log_wandb:
