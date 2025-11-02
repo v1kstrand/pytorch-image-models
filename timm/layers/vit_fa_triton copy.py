@@ -235,7 +235,7 @@ def _attn_bwd_dk_dv(
         K + off_bh_k, (SEQ_LEN, HEAD_DIM), (sks, skd),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
     ) #  base,        shape,               strides,    offsets,      block_shape,        order
     V_blk = tl.make_block_ptr( 
-        V + off_bh_v,(SEQ_LEN, HEAD_DIM),(svs, svd),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
+        V + off_bh_v,(SEQ_LEN, HEAD_DIM), (svs, svd),(start_kv, 0),(BLOCK_KV, HEAD_DIM),(1, 0)
     )
     dK_blk = tl.make_block_ptr( 
         dK + off_bh_dk, (SEQ_LEN, HEAD_DIM), (s_dks, s_dkd), (start_kv, 0), (BLOCK_KV, HEAD_DIM), (1, 0)
@@ -256,33 +256,48 @@ def _attn_bwd_dk_dv(
     K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     V_block = tl.load(V_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
     offs_kv  = start_kv + tl.arange(0, BLOCK_KV)
+    kv_valid = offs_kv < SEQ_LEN
     
-    # Loop over Q tiles
     num_steps = tl.cdiv(SEQ_LEN, BLOCK_Q)
     for qi in range(0, num_steps):
-        qT_block = tl.load(Q_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE) * s
-        dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
-        
         start_q = qi * BLOCK_Q
         offs_q  = start_q + tl.arange(0, BLOCK_Q)
-        m  = tl.load(M + offs_q, mask=offs_q < SEQ_LEN, other=0.0).to(tl.float32)
-        Di = tl.load(D + offs_q, mask=offs_q < SEQ_LEN, other=0.0).to(tl.float32)
+        q_valid = offs_q < SEQ_LEN               # <-- define inside loop for this tile
+        mask    = kv_valid[:, None] & q_valid[None, :]
 
-        S_T = tl.dot(K_block, qT_block)
-        kv_valid = offs_kv < SEQ_LEN
-        S_T = tl.where(kv_valid[:, None], S_T, -float("inf"))
-        P_T = tl.exp(S_T.to(tl.float32) - m[None, :])
+        # loads (boundary_check keeps you memory-safe; q_valid handles logic)
+        qT_block = tl.load(Q_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+        dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
 
-        # --- dV += Pᵀ @ dO  (match operand dtypes) ---
+        # scale exactly ONCE (see note below about where)
+        qT_block = qT_block * s
+
+        # logically mask Q tile
+        qT_block = tl.where(q_valid[None, :], qT_block, 0)
+        dO_block = tl.where(q_valid[:,   None], dO_block, 0)
+
+        # rowwise M and D for these queries
+        m  = tl.load(M + offs_q, mask=q_valid, other=0.0).to(tl.float32)
+        Di = tl.load(D + offs_q, mask=q_valid, other=0.0).to(tl.float32)
+
+        # logits and probs; mask rows (kv) and cols (q) before exp
+        S_T = tl.dot(K_block, qT_block)                     # [BLOCK_KV, BLOCK_Q]
+        S_T = tl.where(mask, S_T, -float("inf"))
+        P_T = tl.exp(S_T.to(tl.float32) - m[None, :])       # masked cols → 0
+
+        # dV += Pᵀ @ dO
         dV_acc = tl.dot(P_T.to(DTYPE), dO_block, dV_acc)
 
-        # --- dpᵀ = V @ dOᵀ, then dSᵀ = Pᵀ * (dpᵀ - Di) ---
-        dpT = tl.dot(V_block, tl.trans(dO_block)).to(tl.float32)
-        dS_T = (P_T * (dpT - Di[None, :])).to(DTYPE)
+        # dpᵀ = V @ dOᵀ ; dSᵀ = Pᵀ * (dpᵀ − Di)
+        dpT   = tl.dot(V_block, tl.trans(dO_block)).to(tl.float32)
+        dS_T  = (P_T * (dpT - Di[None, :])).to(DTYPE)
+
+        # dK += dSᵀ @ Q  (see scaling note below)
         dK_acc = tl.dot(dS_T, tl.trans(qT_block), dK_acc)
 
+        # advance block pointers
         Q_T_blk = tl.advance(Q_T_blk, (0, BLOCK_Q))
-        dO_blk = tl.advance(dO_blk, (BLOCK_Q, 0))
+        dO_blk  = tl.advance(dO_blk,  (BLOCK_Q, 0))
 
     tl.store(dV_blk, dV_acc.to(dV.type.element_ty), boundary_check=(0, 1))
     tl.store(dK_blk, dK_acc.to(dK.type.element_ty), boundary_check=(0, 1))
@@ -404,23 +419,20 @@ def _attn_bwd_dq(
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, V, probe):
+    def forward(ctx, Q, K, V):
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         comp_torch = _sdpa_comp_dtype(Q)
         comp_triton = _triton_compute_dtype(comp_torch)
         
         softmax_scale = 1 / (HEAD_DIM**0.5)
-        O = torch.empty_like(Q)
+        O = torch.empty(Q.shape, dtype=Q.dtype, device=Q.device)
         M = torch.empty(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         )  
-        
-        ctx.save_for_backward(Q, K, V, O, M)
         ctx.softmax_scale = softmax_scale
         ctx.comp_triton = comp_triton
         ctx.scale = softmax_scale
         
-              
         grid = lambda args: (
             triton.cdiv(SEQ_LEN, args["BLOCK_Q"]),
             BATCH_SIZE * NUM_HEADS,
@@ -431,14 +443,40 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=Q.shape[1], SEQ_LEN=Q.shape[2], HEAD_DIM=HEAD_DIM, 
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
-        ctx.probe_size = probe.size()
+        ctx.save_for_backward(Q, K, V, O, M)
+        #ctx.probe_size = probe.size()
         return O
 
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, _M = ctx.saved_tensors
+        BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         scale = ctx.scale
+        
+        _D = torch.empty(_M.shape, dtype=_M.dtype, device=_M.device) 
+        pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
+                         BATCH_SIZE * NUM_HEADS)
+        _attn_bwd_preprocess[pre_grid](
+            O, dO, _D, *O.stride(), *dO.stride(),
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
+        )
+        
+        dQ = torch.empty(Q.shape, dtype=Q.dtype, device=Q.device)  # contiguous
+        dK = torch.empty(K.shape, dtype=K.dtype, device=K.device)
+        dV = torch.empty(V.shape, dtype=V.dtype, device=V.device)
 
+        dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
+                BATCH_SIZE * NUM_HEADS)
+        # Fix KV and iterate through all the Q blocks
+        
+        _attn_bwd_dk_dv[dkdv_grid](
+            Q, K, V, dO, dK, dV, _M, _D,
+            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dK.stride(), *dV.stride(),
+            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
+            DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
+        )
+        
+        """
         # Compute in fp32 for stability
         q32 = Q.to(torch.float32)
         k32 = K.to(torch.float32)
@@ -448,8 +486,11 @@ class TritonAttention(torch.autograd.Function):
         # --- Recompute softmax probabilities P ---
         # scores = (q * scale) @ k^T
         scores = torch.matmul(q32 * scale, k32.transpose(-2, -1))  # [B,H,N,N]
-        P = torch.softmax(scores, dim=-1)  # [B,H,N,N]
-        M = torch.logsumexp(scores, dim=-1).contiguous()  # 
+        #P = torch.softmax(scores, dim=-1)  # [B,H,N,N]
+        
+        P = torch.exp(scores.to(torch.float32) - _M.unsqueeze(-1))
+        #M = torch.logsumexp(scores, dim=-1).contiguous()  
+        
         # --- Backward math ---
         # dV = P^T @ dO
         dV32 = torch.matmul(P.transpose(-2, -1), dO32)  # [B,H,D,N]?
@@ -458,52 +499,31 @@ class TritonAttention(torch.autograd.Function):
 
         # ds = (dP - sum(dP*P, -1, keepdim=True)) * P
         # (softmax backward)
-        S = (dP * P).sum(dim=-1, keepdim=True)
-        ds = (dP - S) * P  # [B,H,N,N]
+        #S = (dP * P).sum(dim=-1, keepdim=True)
+        ds = (dP - _D.unsqueeze(-1)) * P  # [B,H,N,N]
 
         # dQ = (ds @ K) * scale
         dQ32 = torch.matmul(ds, k32) * scale  # [B,H,N,D]
         # dK = (ds^T @ Q) * scale
         dK32 = torch.matmul(ds.transpose(-2, -1), q32) * scale  # [B,H,N,D]
-        gq, gk, gv  = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
-        D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1).contiguous()  # [B,H,N]
         
-        dQ = torch.empty_like(Q)
-        dK = torch.empty_like(K)
-        dV = torch.empty_like(V)
-
-        BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
-
-        _D = torch.empty_like(M)
-        pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
-                         BATCH_SIZE * NUM_HEADS)
-        _attn_bwd_preprocess[pre_grid](
-            O, dO, _D, *O.stride(), *dO.stride(),
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
-        )
+        gq, gk, gv = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
+        return gq, gk, dV
         
-        dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
-                BATCH_SIZE * NUM_HEADS)
-        # Fix KV and iterate through all the Q blocks
+        """
         
-        _attn_bwd_dk_dv[dkdv_grid](
-            Q, K, V, dO, dK, dV, M, D,
-            *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dK.stride(), *dV.stride(),
-            NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
-            DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
-        )
-
         dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                     BATCH_SIZE * NUM_HEADS)
         
         _attn_bwd_dq[dq_grid](
-            Q, K, V, dO, dQ, M, D,
+            Q, K, V, dO, dQ, _M, _D,
             *Q.stride(), *K.stride(), *V.stride(), *dO.stride(), *dQ.stride(),
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
         
-        def comp(a, b):
+
+        """def comp(a, b):
             diff = (a - b).abs().to(torch.float32)
             return torch.stack((diff.amax(), diff.mean()))  
         
@@ -512,12 +532,17 @@ class TritonAttention(torch.autograd.Function):
         max_dV = comp(dV, gv)
         max_D  = comp(D, _D)
         max_M  = comp(M, _M)
-        p = torch.cat((max_dQ, max_dK, max_dV, max_D, max_M), dim=0)
+        p = torch.cat((max_dQ, max_dK, max_dV, max_D, max_M), dim=0)"""
         
-        return gq, gk, gv, p
+        return dQ, dK, dV
+
+def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
+    #Q = Q.contiguous()
+    #K = K.contiguous()
+    #V = V.contiguous()
+    return TritonAttention.apply(Q, K, V)
     
-    
-def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
+def _sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
     #Q = Q.contiguous()
     #K = K.contiguous()
     #V = V.contiguous()

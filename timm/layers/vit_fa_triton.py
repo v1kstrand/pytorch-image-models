@@ -3,11 +3,6 @@ import torch
 from torch import Tensor
 import triton
 import triton.language as tl
-import torch.nn.functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
-import torch._dynamo as dynamo
-
-SDPA_BACKEND = SDPBackend.MATH
 
 GROUP_NM_SWEEP = [4, 8]
 NUM_STAGES_SWEEP = [3, 4, 5]
@@ -252,9 +247,12 @@ def _attn_bwd_dk_dv(
 
     dV_acc = tl.zeros((BLOCK_KV, HEAD_DIM), dtype=tl.float32)
     dK_acc = tl.zeros((BLOCK_KV, HEAD_DIM), dtype=tl.float32)
-    s = tl.full([1], softmax_scale, dtype=DTYPE)
-    K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+    s_fp32 = tl.full([1], softmax_scale, dtype=tl.float32)
+    
     V_block = tl.load(V_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+    K_block = tl.load(K_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
+    K_block = (K_block.to(tl.float32) * s_fp32).to(DTYPE)
+
     offs_kv  = start_kv + tl.arange(0, BLOCK_KV)
     kv_valid = offs_kv < SEQ_LEN
     
@@ -268,9 +266,6 @@ def _attn_bwd_dk_dv(
         # loads (boundary_check keeps you memory-safe; q_valid handles logic)
         qT_block = tl.load(Q_T_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
         dO_block = tl.load(dO_blk, boundary_check=(0, 1), padding_option="zero").to(DTYPE)
-
-        # scale exactly ONCE (see note below about where)
-        qT_block = qT_block * s
 
         # logically mask Q tile
         qT_block = tl.where(q_valid[None, :], qT_block, 0)
@@ -291,16 +286,15 @@ def _attn_bwd_dk_dv(
         # dpᵀ = V @ dOᵀ ; dSᵀ = Pᵀ * (dpᵀ − Di)
         dpT   = tl.dot(V_block, tl.trans(dO_block)).to(tl.float32)
         dS_T  = (P_T * (dpT - Di[None, :])).to(DTYPE)
-
-        # dK += dSᵀ @ Q  (see scaling note below)
         dK_acc = tl.dot(dS_T, tl.trans(qT_block), dK_acc)
 
         # advance block pointers
         Q_T_blk = tl.advance(Q_T_blk, (0, BLOCK_Q))
         dO_blk  = tl.advance(dO_blk,  (BLOCK_Q, 0))
 
+    dK_acc = (dK_acc * s_fp32).to(dK.type.element_ty)
+    tl.store(dK_blk, dK_acc                       , boundary_check=(0, 1))
     tl.store(dV_blk, dV_acc.to(dV.type.element_ty), boundary_check=(0, 1))
-    tl.store(dK_blk, dK_acc.to(dK.type.element_ty), boundary_check=(0, 1))
     
 
 @triton.autotune(
@@ -444,14 +438,12 @@ class TritonAttention(torch.autograd.Function):
             softmax_scale=softmax_scale, DTYPE=comp_triton,
         )
         ctx.save_for_backward(Q, K, V, O, M)
-        #ctx.probe_size = probe.size()
         return O
 
     @staticmethod
     def backward(ctx, dO):
         Q, K, V, O, _M = ctx.saved_tensors
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
-        scale = ctx.scale
         
         _D = torch.empty(_M.shape, dtype=_M.dtype, device=_M.device) 
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
@@ -461,13 +453,12 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM,
         )
         
-        dQ = torch.empty(Q.shape, dtype=Q.dtype, device=Q.device)  # contiguous
+        dQ = torch.empty(Q.shape, dtype=Q.dtype, device=Q.device) 
         dK = torch.empty(K.shape, dtype=K.dtype, device=K.device)
         dV = torch.empty(V.shape, dtype=V.dtype, device=V.device)
 
         dkdv_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_KV"]),
                 BATCH_SIZE * NUM_HEADS)
-        # Fix KV and iterate through all the Q blocks
         
         _attn_bwd_dk_dv[dkdv_grid](
             Q, K, V, dO, dK, dV, _M, _D,
@@ -475,42 +466,6 @@ class TritonAttention(torch.autograd.Function):
             NUM_HEADS=NUM_HEADS, SEQ_LEN=SEQ_LEN, HEAD_DIM=HEAD_DIM, 
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
-        
-        """
-        # Compute in fp32 for stability
-        q32 = Q.to(torch.float32)
-        k32 = K.to(torch.float32)
-        v32 = V.to(torch.float32)
-        dO32 = dO.to(torch.float32)
-
-        # --- Recompute softmax probabilities P ---
-        # scores = (q * scale) @ k^T
-        scores = torch.matmul(q32 * scale, k32.transpose(-2, -1))  # [B,H,N,N]
-        #P = torch.softmax(scores, dim=-1)  # [B,H,N,N]
-        
-        P = torch.exp(scores.to(torch.float32) - _M.unsqueeze(-1))
-        #M = torch.logsumexp(scores, dim=-1).contiguous()  
-        
-        # --- Backward math ---
-        # dV = P^T @ dO
-        dV32 = torch.matmul(P.transpose(-2, -1), dO32)  # [B,H,D,N]?
-        # dP = dO @ V^T
-        dP = torch.matmul(dO32, v32.transpose(-2, -1))  # [B,H,N,N]
-
-        # ds = (dP - sum(dP*P, -1, keepdim=True)) * P
-        # (softmax backward)
-        #S = (dP * P).sum(dim=-1, keepdim=True)
-        ds = (dP - _D.unsqueeze(-1)) * P  # [B,H,N,N]
-
-        # dQ = (ds @ K) * scale
-        dQ32 = torch.matmul(ds, k32) * scale  # [B,H,N,D]
-        # dK = (ds^T @ Q) * scale
-        dK32 = torch.matmul(ds.transpose(-2, -1), q32) * scale  # [B,H,N,D]
-        
-        gq, gk, gv = dQ32.to(Q.dtype), dK32.to(K.dtype), dV32.to(V.dtype)
-        return gq, gk, dV
-        
-        """
         
         dq_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                     BATCH_SIZE * NUM_HEADS)
@@ -522,28 +477,8 @@ class TritonAttention(torch.autograd.Function):
             DTYPE=ctx.comp_triton, softmax_scale=ctx.softmax_scale
         )
         
-
-        """def comp(a, b):
-            diff = (a - b).abs().to(torch.float32)
-            return torch.stack((diff.amax(), diff.mean()))  
-        
-        max_dQ = comp(dQ, gq)
-        max_dK = comp(dK, gk)
-        max_dV = comp(dV, gv)
-        max_D  = comp(D, _D)
-        max_M  = comp(M, _M)
-        p = torch.cat((max_dQ, max_dK, max_dV, max_D, max_M), dim=0)"""
-        
         return dQ, dK, dV
 
 def sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor):
-    #Q = Q.contiguous()
-    #K = K.contiguous()
-    #V = V.contiguous()
     return TritonAttention.apply(Q, K, V)
     
-def _sdpa_triton_fa(Q: Tensor, K: Tensor, V: Tensor, probe):
-    #Q = Q.contiguous()
-    #K = K.contiguous()
-    #V = V.contiguous()
-    return TritonAttention.apply(Q, K, V, probe)
