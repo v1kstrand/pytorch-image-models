@@ -1128,7 +1128,7 @@ class TritonAttention(torch.autograd.Function):
         return dQ, dK, dV, None, None, None, None
 
 class CosSinTable:
-    def __init__(self, base, H_img, D):
+    def __init__(self, base, H_img = 14, D = 16):
         COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D)
         self.COSX = COSX
         self.COSY = COSY
