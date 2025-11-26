@@ -1,7 +1,11 @@
 import torch
-from torch import Tensor
 import triton
 import triton.language as tl
+
+GROUP_NM_SWEEP = [4, 8]
+NUM_STAGES_SWEEP = [2, 3, 4]
+NUM_WARPS_SWEEP = [2, 4]
+KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]
 
 def _build_axial_rope(
     side_len: int,
@@ -36,10 +40,6 @@ def _build_axial_rope(
     sin_y = sin_1d[None, :, :].expand(N, N, per_axis).reshape(N * N, per_axis)
     return cos_x, sin_x, cos_y, sin_y
 
-GROUP_NM_SWEEP = [4, 8]
-NUM_STAGES_SWEEP = [2, 3, 4]
-NUM_WARPS_SWEEP = [2, 4]
-KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]
 
 def _sdpa_comp_dtype(x: torch.Tensor) -> torch.dtype:
     dtype = torch.get_autocast_dtype('cuda') if torch.is_autocast_enabled() else x.dtype
@@ -864,18 +864,10 @@ def _attn_bwd_dq_rope(
         krow_ye = (D2_i + even) * skd_i
         krow_yo = (D2_i + odd ) * skd_i
 
-        Kxe = tl.load(
-            base_K + krow_xe[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0,
-        ).to(DTYPE)
-        Kxo = tl.load(
-            base_K + krow_xo[:, None] + kv_colsK,    mask=kv_valid[None, :],other=0.0,
-        ).to(DTYPE)
-        Kye = tl.load(
-            base_K + krow_ye[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0,
-        ).to(DTYPE)
-        Kyo = tl.load(
-            base_K + krow_yo[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0,
-        ).to(DTYPE)
+        Kxe = tl.load(base_K + krow_xe[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0).to(DTYPE)
+        Kxo = tl.load(base_K + krow_xo[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0).to(DTYPE)
+        Kye = tl.load(base_K + krow_ye[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0).to(DTYPE)
+        Kyo = tl.load(base_K + krow_yo[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0).to(DTYPE)
 
         # K-side RoPE
         lin_k    = k_idx - HAS_CLS
