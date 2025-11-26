@@ -8,133 +8,8 @@ from ._fx import register_notrace_function
 from .config import use_fused_attn
 from .pos_embed_sincos import apply_rot_embed_cat
 from .vit_fa_triton import sdpa_triton_fa
+from .vit_fa_triton_rope import sdpa_triton_fa_rope, CosSinTable
 from typing import Optional, Tuple
-
-
-def _rotate_half(x):
-    # (..., 2m) -> [e,o] per pair
-    x_even = x[..., 0::2]
-    x_odd  = x[..., 1::2]
-    # complex multiply: (e + i o) * (cos + i sin)
-    return torch.stack([-x_odd, x_even], dim=-1).reshape_as(x)
-
-def _build_axial_rope(
-    H: int,
-    W: int,
-    head_dim: int,
-    device: torch.device,
-    dtype: torch.dtype,
-    base: float = 10000.0,
-):
-    """
-    Returns cos/sin for x-axis and y-axis, each of shape [N, head_dim//2].
-    """
-    assert head_dim % 4 == 0, "head_dim must be divisible by 4 for 2D axial RoPE."
-    per_axis = head_dim // 2
-    half = per_axis // 2  # number of distinct frequencies per axis
-
-    inv_freq = (base ** (-torch.arange(0, half, device=device, dtype=torch.float32) / half))  # [half]
-
-    pos_x = torch.arange(H, device=device, dtype=torch.float32)            # [H]
-    pos_y = torch.arange(W, device=device, dtype=torch.float32)            # [W]
-
-    theta_x = torch.outer(pos_x, inv_freq)                                 # [H, half]
-    theta_y = torch.outer(pos_y, inv_freq)                                 # [W, half]
-
-    # expand frequencies to pairs -> per_axis
-    cos_x = torch.cos(theta_x).repeat_interleave(2, dim=-1)                # [H, per_axis]
-    sin_x = torch.sin(theta_x).repeat_interleave(2, dim=-1)
-    cos_y = torch.cos(theta_y).repeat_interleave(2, dim=-1)                # [W, per_axis]
-    sin_y = torch.sin(theta_y).repeat_interleave(2, dim=-1)
-
-    # broadcast to grid and flatten tokens
-    cos_x = cos_x[:, None, :].expand(H, W, per_axis).reshape(H * W, per_axis).to(dtype)
-    sin_x = sin_x[:, None, :].expand(H, W, per_axis).reshape(H * W, per_axis).to(dtype)
-    cos_y = cos_y[None, :, :].expand(H, W, per_axis).reshape(H * W, per_axis).to(dtype)
-    sin_y = sin_y[None, :, :].expand(H, W, per_axis).reshape(H * W, per_axis).to(dtype)
-
-    return cos_x, sin_x, cos_y, sin_y  # each [N, per_axis]
-
-def _build_axial_rope_square(
-    N: int,
-    head_dim: int,
-    device: torch.device,
-    dtype: torch.dtype,
-    base: float = 10000.0,
-):
-    """
-    2-D axial RoPE (Rotary Positional Embedding) tables for an N x N grid.
-    Returns (cos_x, sin_x, cos_y, sin_y), each [N*N, head_dim//2].
-    """
-    assert head_dim % 4 == 0
-    per_axis = head_dim // 2
-    half = per_axis // 2  # distinct angles (pairs) per axis
-
-    # frequency ladder ω_k
-    inv_freq = base ** (-torch.arange(0, half, device=device, dtype=torch.float32) / half)  # [half]
-
-    # 1-D positions reused for both axes
-    pos = torch.arange(N, device=device, dtype=torch.float32)  # [N]
-    theta = torch.outer(pos, inv_freq)  # [N, half]
-
-    # duplicate each angle for pairwise rotation -> [N, per_axis]
-    cos_1d = torch.cos(theta).repeat_interleave(2, dim=-1)
-    sin_1d = torch.sin(theta).repeat_interleave(2, dim=-1)
-
-    # broadcast to 2-D grid and flatten with lin = y*N + x
-    cos_x = cos_1d[:, None, :].expand(N, N, per_axis).reshape(N * N, per_axis).to(dtype)
-    sin_x = sin_1d[:, None, :].expand(N, N, per_axis).reshape(N * N, per_axis).to(dtype)
-    cos_y = cos_1d[None, :, :].expand(N, N, per_axis).reshape(N * N, per_axis).to(dtype)
-    sin_y = sin_1d[None, :, :].expand(N, N, per_axis).reshape(N * N, per_axis).to(dtype)
-    return cos_x, sin_x, cos_y, sin_y
-
-
-def apply_axial_rope_2d(
-    q: torch.Tensor,  # [B, Hh, N, D]
-    k: torch.Tensor,  # [B, Hh, N, D]
-    cos_x, sin_x, cos_y, sin_y,
-    grid_size, has_cls_token: bool = False
-):
-    B, Hh, N, D = q.shape
-    H, W = grid_size
-    per_axis = D // 2
-
-    if has_cls_token:
-        assert N - 1 == H * W
-        q_cls, q_tok = q[..., :1, :], q[..., 1:, :]
-        k_cls, k_tok = k[..., :1, :], k[..., 1:, :]
-    else:
-        assert N == H * W
-        q_tok, k_tok = q, k
-
-    cos_x = cos_x.to(q.dtype).unsqueeze(0).unsqueeze(0)  # [1,1,HW,D/2]
-    sin_x = sin_x.to(q.dtype).unsqueeze(0).unsqueeze(0)
-    cos_y = cos_y.to(q.dtype).unsqueeze(0).unsqueeze(0)
-    sin_y = sin_y.to(q.dtype).unsqueeze(0).unsqueeze(0)
-
-    def apply_axis(x, cos, sin):
-        return x * cos + _rotate_half(x) * sin
-
-    qx, qy = q_tok[..., :per_axis], q_tok[..., per_axis:]
-    kx, ky = k_tok[..., :per_axis], k_tok[..., per_axis:]
-
-    qx = apply_axis(qx, cos_x, sin_x)
-    qy = apply_axis(qy, cos_y, sin_y)
-    kx = apply_axis(kx, cos_x, sin_x)
-    ky = apply_axis(ky, cos_y, sin_y)
-
-    q_tok = torch.cat([qx, qy], dim=-1)
-    k_tok = torch.cat([kx, ky], dim=-1)
-
-    if has_cls_token:
-        q = torch.cat([q_cls, q_tok], dim=-2)
-        k = torch.cat([k_cls, k_tok], dim=-2)
-    else:
-        q, k = q_tok, k_tok
-    return q, k
-
-
-
 
 
 @torch.fx.wrap
@@ -196,9 +71,8 @@ class Attention(nn.Module):
         self.norm = norm_layer(dim, **dd) if scale_norm else nn.Identity()
         self.proj = nn.Linear(dim, dim, bias=proj_bias, **dd)
         self.proj_drop = nn.Dropout(proj_drop)
-        #self.probe = nn.Parameter(torch.zeros(10))
         self.stride = None
-        cos_x, sin_x, cos_y, sin_y = _build_axial_rope(196, W_img, 64, "cuda", torch.float32, 100)
+        self.cos_sin_table = CosSinTable(100) if self.fused_attn == 3 else None
 
     def forward(
             self,
@@ -210,17 +84,13 @@ class Attention(nn.Module):
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
         
-        if self.fused_attn == 2:
+        if self.fused_attn == 3:
             #x = sdpa_triton_fa(q, k, v, self.probe)
             #self.stride = (q.stride(), k.stride(), v.stride())
+            x = sdpa_triton_fa_rope(q, k, v, self.cos_sin_table)
+        elif self.fused_attn == 2:
             x = sdpa_triton_fa(q, k, v)
-        elif self.fused_attn == 1:
-            q_rot, k_rot = apply_axial_rope_2d(
-                q, k, (H_img, W_img),
-                has_cls_token=True,
-                base=100.,
-            )
-            
+        elif self.fused_attn == 1:            
             x = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attn_mask,

@@ -2,9 +2,13 @@ import torch
 import triton
 import triton.language as tl
 
-GROUP_NM_SWEEP = [4, 8]
+"""GROUP_NM_SWEEP = [4, 8]
 NUM_STAGES_SWEEP = [2, 3, 4]
-NUM_WARPS_SWEEP = [2, 4]
+NUM_WARPS_SWEEP = [2, 4]"""
+
+GROUP_NM_SWEEP = [4]
+NUM_STAGES_SWEEP = [3]
+NUM_WARPS_SWEEP = [2]
 KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]
 
 def _build_axial_rope(
@@ -1124,8 +1128,8 @@ class TritonAttention(torch.autograd.Function):
         return dQ, dK, dV, None, None, None, None
 
 class CosSinTable:
-    def __init__(self, base, H_img, W_img, D):
-        COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, W_img, D)
+    def __init__(self, base, H_img, D):
+        COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D)
         self.COSX = COSX
         self.COSY = COSY
         self.SINX = SINX
@@ -1134,7 +1138,7 @@ class CosSinTable:
     def tabels(self):
         return self.COSX, self.SINX, self.COSY, self.SINY,
 
-    def _rope_pairs_tables(self, base, H_img, W_img, D, device = "cuda"):
+    def _rope_pairs_tables(self, base, H_img, D, device = "cuda"):
         cos_x, sin_x, cos_y, sin_y = _build_axial_rope(
             H_img, D, device, base=base
         )
@@ -1146,7 +1150,7 @@ class CosSinTable:
         return COSX, SINX, COSY, SINY
     
     
-def sdpa_triton_fa(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, cos_sin: CosSinTable):
+def sdpa_triton_fa_rope(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, cos_sin: CosSinTable):
     """
     Triton Scaled Dot-Product Attention (SDPA) with 2D Axial RoPE.
 
