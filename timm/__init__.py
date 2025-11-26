@@ -1,4 +1,5 @@
 from .version import __version__ as __version__
+from .train import main as train_main
 from .layers import (
     is_scriptable as is_scriptable,
     is_exportable as is_exportable,

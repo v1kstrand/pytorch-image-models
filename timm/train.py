@@ -432,6 +432,8 @@ group.add_argument('--naflex-loss-scale', default='linear', type=str,
                    help='Scale loss (gradient) by batch_size ("none", "sqrt", or "linear")')
 group.add_argument('--return-model', action='store_true', default=False,
                    help='returns the model directly after loading')
+group.add_argument('--FA_kernel', default='1', type=str
+                   help='returns the model directly after loading')
 
 
 group.add_argument('--base-dir', default="/notebooks/output/train", type=str)
