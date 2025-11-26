@@ -987,7 +987,7 @@ def _attn_bwd_dq_rope(
 
 class TritonAttention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, V, cos_sin, H_img=196, has_cls=True):
+    def forward(ctx, Q, K, V, cos_sin, H_img=14, has_cls=True):
         # ---- Shapes / dtypes ----
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         assert (HEAD_DIM % 4) == 0, "HEAD_DIM must be divisible by 4 (2D RoPE requires pairs)."
