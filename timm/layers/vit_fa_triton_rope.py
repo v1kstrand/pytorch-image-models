@@ -1042,7 +1042,7 @@ class TritonAttention(torch.autograd.Function):
         ctx.comp_triton = comp_triton
         ctx.has_cls = has_cls
         ctx.save_for_backward(Q, K, V, O, M, COSX, SINX, COSY, SINY)
-        return O.contiguous()
+        return O
     
 
     @staticmethod
