@@ -1053,8 +1053,8 @@ class TritonAttention(torch.autograd.Function):
         dQ = torch.empty(Q.shape, dtype=Q.dtype, device=Q.device) 
         dK = torch.empty(K.shape, dtype=K.dtype, device=K.device)
         dV = torch.empty(V.shape, dtype=V.dtype, device=V.device)
-        D = torch.empty(M.shape, dtype=M.dtype, device=M.device) 
         
+        D = torch.empty(M.shape, dtype=M.dtype, device=M.device) 
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
@@ -1128,7 +1128,7 @@ class TritonAttention(torch.autograd.Function):
         return dQ, dK, dV, None, None, None, None
 
 class CosSinTable:
-    def __init__(self, base, H_img = 14, D = 16):
+    def __init__(self, base, H_img = 14, D = 64):
         COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D)
         self.COSX = COSX
         self.COSY = COSY
@@ -1157,9 +1157,5 @@ def sdpa_triton_fa_rope(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, cos_s
     Q, K, V: [B, H, S, D] (contiguous)
     S must be 1 + H_img*W_img if has_cls=True, else S == H_img*W_img.
     """
-    print("Q shape:", Q.shape, "stride:", Q.stride())
-    print("K shape:", K.shape, "stride:", K.stride())
-    print("V shape:", V.shape, "stride:", V.stride())
-    return TritonAttention.apply(Q, K, V, cos_sin)
-    #return TritonAttention.apply(Q.contiguous(), K.contiguous(), V.contiguous(), cos_sin)
+    return TritonAttention.apply(Q.contiguous(), K.contiguous(), V.contiguous(), cos_sin)
 
