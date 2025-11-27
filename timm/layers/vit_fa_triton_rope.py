@@ -1042,7 +1042,7 @@ class TritonAttention(torch.autograd.Function):
         ctx.comp_triton = comp_triton
         ctx.has_cls = has_cls
         ctx.save_for_backward(Q, K, V, O, M, COSX, SINX, COSY, SINY)
-        return O
+        return O.contiguous()
     
 
     @staticmethod
@@ -1053,8 +1053,8 @@ class TritonAttention(torch.autograd.Function):
         dQ = torch.empty(Q.shape, dtype=Q.dtype, device=Q.device) 
         dK = torch.empty(K.shape, dtype=K.dtype, device=K.device)
         dV = torch.empty(V.shape, dtype=V.dtype, device=V.device)
-        
         D = torch.empty(M.shape, dtype=M.dtype, device=M.device) 
+        
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
