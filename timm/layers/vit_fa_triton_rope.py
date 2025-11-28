@@ -112,7 +112,7 @@ def _attn_fwd(
     rot           = pid_bh % tiles_in_this
     m_swizzled    = group_id * GROUP_M + ((m_in_grp_eff + rot) % tiles_in_this)
     start_q = m_swizzled * BLOCK_Q
-    if start_q >= SEQ_LEN:
+    if start_q >= SEQ_LEN or m_swizzled >= num_tiles_m:
         return
 
     # ---- (b,h) plane selection ----
