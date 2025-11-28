@@ -101,20 +101,13 @@ def _attn_fwd(
 ):
     tl.static_assert((HEAD_DIM % 4) == 0)
 
-    # ---- swizzled tile ids ----
     pid_m  = tl.program_id(0)
     pid_bh = tl.program_id(1)
-    num_tiles_m   = tl.cdiv(SEQ_LEN, BLOCK_Q)
-    group_id      = pid_m // GROUP_M
-    tiles_in_this = tl.minimum(GROUP_M, num_tiles_m - group_id * GROUP_M)
-    m_in_grp      = pid_m - group_id * GROUP_M
-    m_in_grp_eff  = m_in_grp % tiles_in_this
-    rot           = pid_bh % tiles_in_this
-    m_swizzled    = group_id * GROUP_M + ((m_in_grp_eff + rot) % tiles_in_this)
-    start_q = m_swizzled * BLOCK_Q
-    if start_q >= SEQ_LEN or m_swizzled >= num_tiles_m:
-        return
 
+    # --- no swizzle: plain linear tiling over M ---
+    start_q = pid_m * BLOCK_Q
+    if start_q >= SEQ_LEN:
+        return
     # ---- (b,h) plane selection ----
     b = pid_bh // NUM_HEADS
     h = pid_bh %  NUM_HEADS
