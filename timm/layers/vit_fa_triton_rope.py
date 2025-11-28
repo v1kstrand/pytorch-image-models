@@ -1157,6 +1157,6 @@ def sdpa_triton_fa_rope(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, cos_s
     Q, K, V: [B, H, S, D] (contiguous)
     S must be 1 + H_img*W_img if has_cls=True, else S == H_img*W_img.
     """
-    return TritonAttention.apply(Q.contiguous(), K.contiguous(), V.contiguous(), cos_sin)
-    #return TritonAttention.apply(Q, K, V, cos_sin)
+    #return TritonAttention.apply(Q.contiguous(), K.contiguous(), V.contiguous(), cos_sin)
+    return TritonAttention.apply(Q, K, V, cos_sin)
 
