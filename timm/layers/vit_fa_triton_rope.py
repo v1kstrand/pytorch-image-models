@@ -997,6 +997,12 @@ class TritonAttention(torch.autograd.Function):
         else:
             assert SEQ_LEN == N_img, f"SEQ_LEN must equal H_img*W_img when has_cls=False (got {SEQ_LEN} vs {N_img})."
 
+        
+        print("[TRITON WRAPPER] Q/K/V")
+        print("  Q.shape:", Q.shape, "Q.stride:", Q.stride())
+        print("  K.shape:", K.shape, "K.stride:", K.stride())
+        print("  V.shape:", V.shape, "V.stride:", V.stride())
+    
         comp_triton = _sdpa_comp_dtype(Q)
         softmax_scale = 1.0 / (HEAD_DIM ** 0.5)
 
@@ -1047,13 +1053,14 @@ class TritonAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dO):
+        print("[TRITON WRAPPER] Q/K/V")
+        print("  dO.shape:", dO.shape, "dO.stride:", dO.stride())
         Q, K, V, O, M, COSX, SINX, COSY, SINY = ctx.saved_tensors
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         
         dQ = torch.empty(Q.shape, dtype=Q.dtype, device=Q.device) 
         dK = torch.empty(K.shape, dtype=K.dtype, device=K.device)
         dV = torch.empty(V.shape, dtype=V.dtype, device=V.device)
-        
         D = torch.empty(M.shape, dtype=M.dtype, device=M.device) 
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
