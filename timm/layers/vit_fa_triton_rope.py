@@ -99,14 +99,18 @@ def _attn_fwd(
     DTYPE: tl.constexpr,             # compute dtype (e.g., tl.float32 or tl.float16)
     GROUP_M: tl.constexpr,
 ):
-    tl.static_assert((HEAD_DIM % 4) == 0)
-
+    # ---- swizzled tile ids ----
     pid_m  = tl.program_id(0)
     pid_bh = tl.program_id(1)
-
-    # --- no swizzle: plain linear tiling over M ---
-    start_q = pid_m * BLOCK_Q
-    if start_q >= SEQ_LEN:
+    num_tiles_m   = tl.cdiv(SEQ_LEN, BLOCK_Q)
+    group_id      = pid_m // GROUP_M
+    tiles_in_this = tl.minimum(GROUP_M, num_tiles_m - group_id * GROUP_M)
+    m_in_grp      = pid_m - group_id * GROUP_M
+    m_in_grp_eff  = m_in_grp % tiles_in_this
+    rot           = pid_bh % tiles_in_this
+    m_swizzled    = group_id * GROUP_M + ((m_in_grp_eff + rot) % tiles_in_this)
+    start_q = m_swizzled * BLOCK_Q
+    if start_q >= SEQ_LEN or m_swizzled >= num_tiles_m:
         return
     # ---- (b,h) plane selection ----
     b = pid_bh // NUM_HEADS
@@ -992,11 +996,10 @@ class TritonAttention(torch.autograd.Function):
         else:
             assert SEQ_LEN == N_img, f"SEQ_LEN must equal H_img*W_img when has_cls=False (got {SEQ_LEN} vs {N_img})."
 
-        
-        print("[TRITON WRAPPER] Q/K/V")
-        print("  Q.shape:", Q.shape, "Q.stride:", Q.stride())
-        print("  K.shape:", K.shape, "K.stride:", K.stride())
-        print("  V.shape:", V.shape, "V.stride:", V.stride())
+        #print("[TRITON WRAPPER] Q/K/V")
+        #print("  Q.shape:", Q.shape, "Q.stride:", Q.stride())
+        #print("  K.shape:", K.shape, "K.stride:", K.stride())
+        #print("  V.shape:", V.shape, "V.stride:", V.stride())
     
         comp_triton = _sdpa_comp_dtype(Q)
         softmax_scale = 1.0 / (HEAD_DIM ** 0.5)
@@ -1006,8 +1009,6 @@ class TritonAttention(torch.autograd.Function):
         M = torch.empty(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         ) 
-        #O_debug = torch.randn(Q.shape, dtype=Q.dtype, device=Q.device)
-
 
         # ---- RoPE tables [N, P] (float32) ----
         COSX, SINX, COSY, SINY = cos_sin.tables()
@@ -1050,8 +1051,8 @@ class TritonAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dO):
-        print("[TRITON WRAPPER] Q/K/V")
-        print("  dO.shape:", dO.shape, "dO.stride:", dO.stride())
+        #print("[TRITON WRAPPER] Q/K/V")
+        #print("  dO.shape:", dO.shape, "dO.stride:", dO.stride())
         Q, K, V, O, M, COSX, SINX, COSY, SINY = ctx.saved_tensors
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         
