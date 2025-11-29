@@ -490,7 +490,7 @@ def main(override_args=None):
         
         comet_exp = comet_ml.start(
             api_key=os.getenv("COMET_API_KEY"),
-            project_name=args.comet_proj_name,
+            project_name=args.experiment,
             experiment_key=args.comet_exp_key or None
         )
         comet_exp.set_name(args.comet_exp_name)
