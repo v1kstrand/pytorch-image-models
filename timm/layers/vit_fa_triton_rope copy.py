@@ -101,20 +101,13 @@ def _attn_fwd(
 ):
     tl.static_assert((HEAD_DIM % 4) == 0)
 
-    # ---- swizzled tile ids ----
     pid_m  = tl.program_id(0)
     pid_bh = tl.program_id(1)
-    num_tiles_m   = tl.cdiv(SEQ_LEN, BLOCK_Q)
-    group_id      = pid_m // GROUP_M
-    tiles_in_this = tl.minimum(GROUP_M, num_tiles_m - group_id * GROUP_M)
-    m_in_grp      = pid_m - group_id * GROUP_M
-    m_in_grp_eff  = m_in_grp % tiles_in_this
-    rot           = pid_bh % tiles_in_this
-    m_swizzled    = group_id * GROUP_M + ((m_in_grp_eff + rot) % tiles_in_this)
-    start_q = m_swizzled * BLOCK_Q
+
+    # --- no swizzle: plain linear tiling over M ---
+    start_q = pid_m * BLOCK_Q
     if start_q >= SEQ_LEN:
         return
-
     # ---- (b,h) plane selection ----
     b = pid_bh // NUM_HEADS
     h = pid_bh %  NUM_HEADS
@@ -997,6 +990,12 @@ class TritonAttention(torch.autograd.Function):
         else:
             assert SEQ_LEN == N_img, f"SEQ_LEN must equal H_img*W_img when has_cls=False (got {SEQ_LEN} vs {N_img})."
 
+        
+        print("[TRITON WRAPPER] Q/K/V")
+        print("  Q.shape:", Q.shape, "Q.stride:", Q.stride())
+        print("  K.shape:", K.shape, "K.stride:", K.stride())
+        print("  V.shape:", V.shape, "V.stride:", V.stride())
+    
         comp_triton = _sdpa_comp_dtype(Q)
         softmax_scale = 1.0 / (HEAD_DIM ** 0.5)
 
@@ -1007,7 +1006,7 @@ class TritonAttention(torch.autograd.Function):
         ) 
 
         # ---- RoPE tables [N, P] (float32) ----
-        COSX, SINX, COSY, SINY = cos_sin.tabels()
+        COSX, SINX, COSY, SINY = cos_sin.tables()
         P_pairs = HEAD_DIM // 4
 
         # ---- Launch ----
@@ -1047,6 +1046,8 @@ class TritonAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dO):
+        print("[TRITON WRAPPER] Q/K/V")
+        print("  dO.shape:", dO.shape, "dO.stride:", dO.stride())
         Q, K, V, O, M, COSX, SINX, COSY, SINY = ctx.saved_tensors
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         
@@ -1054,7 +1055,6 @@ class TritonAttention(torch.autograd.Function):
         dK = torch.empty(K.shape, dtype=K.dtype, device=K.device)
         dV = torch.empty(V.shape, dtype=V.dtype, device=V.device)
         D = torch.empty(M.shape, dtype=M.dtype, device=M.device) 
-        
         pre_grid = lambda meta: (triton.cdiv(SEQ_LEN, meta["BLOCK_Q"]),
                          BATCH_SIZE * NUM_HEADS)
         _attn_bwd_preprocess[pre_grid](
@@ -1127,22 +1127,24 @@ class TritonAttention(torch.autograd.Function):
         
         return dQ, dK, dV, None, None, None, None
 
-class CosSinTable:
-    def __init__(self, base, H_img = 14, D = 16):
-        COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D)
-        self.COSX = COSX
-        self.COSY = COSY
-        self.SINX = SINX
-        self.SINY = SINY
-        
-    def tabels(self):
-        return self.COSX, self.SINX, self.COSY, self.SINY,
+class CosSinTable(torch.nn.Module):
+    def __init__(self, base, H_img=14, D=64, device="cuda"):
+        super().__init__()
+        COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D, device)
 
-    def _rope_pairs_tables(self, base, H_img, D, device = "cuda"):
+        # Register as buffers so they move with the module and go in state_dict
+        self.register_buffer("COSX", COSX)
+        self.register_buffer("SINX", SINX)
+        self.register_buffer("COSY", COSY)
+        self.register_buffer("SINY", SINY)
+
+    def tables(self):
+        return self.COSX, self.SINX, self.COSY, self.SINY
+
+    def _rope_pairs_tables(self, base, H_img, D, device="cuda"):
         cos_x, sin_x, cos_y, sin_y = _build_axial_rope(
             H_img, D, device, base=base
         )
-        # reduce to pairs: [N, P] where P = D//4
         COSX = cos_x[:, 0::2].contiguous()
         SINX = sin_x[:, 0::2].contiguous()
         COSY = cos_y[:, 0::2].contiguous()
@@ -1157,9 +1159,6 @@ def sdpa_triton_fa_rope(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, cos_s
     Q, K, V: [B, H, S, D] (contiguous)
     S must be 1 + H_img*W_img if has_cls=True, else S == H_img*W_img.
     """
-    print("Q shape:", Q.shape, "stride:", Q.stride())
-    print("K shape:", K.shape, "stride:", K.stride())
-    print("V shape:", V.shape, "stride:", V.stride())
-    return TritonAttention.apply(Q, K, V, cos_sin)
     #return TritonAttention.apply(Q.contiguous(), K.contiguous(), V.contiguous(), cos_sin)
+    return TritonAttention.apply(Q, K, V, cos_sin)
 

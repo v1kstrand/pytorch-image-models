@@ -226,30 +226,6 @@ def _attn_fwd(
         S_tile = S_tile * tl.full((1,), softmax_scale, dtype=tl.float32)
         S_tile = tl.where(q_valid[:,None] & kv_valid[None,:], S_tile, -float("inf"))
 
-        # online softmax
-        m_ij  = tl.maximum(m_i, tl.max(S_tile, axis=1))
-        alpha = tl.where(q_valid, tl.exp(m_i - m_ij), 1.0)
-        P_blk = tl.where(q_valid[:,None], tl.exp(S_tile - m_ij[:,None]), 0.0)
-        l_ij  = tl.sum(P_blk, axis=1)
-
-        # accumulate O
-        d_idx  = tl.arange(0, HEAD_DIM)[None, :].to(tl.int32)    # [1, D]
-        V_ptrs = (V + off_bh_v) + kv_cols64_v * svs_i + d_idx * svd_i  # [BKV, D]
-        V_blk  = tl.load(V_ptrs, mask=kv_valid[:, None], other=0.).to(DTYPE)
-        O_blk  = O_blk * alpha[:, None]
-        O_blk  = tl.dot(P_blk.to(DTYPE), V_blk, O_blk)                        # (BQ,BKV) @ (BKV,D) + O_blk
-
-        l_i = tl.where(q_valid, l_i * alpha + l_ij, l_i)
-        m_i = tl.where(q_valid, m_ij, m_i)
-
-    # ---- write back M and O ----
-    m_ptrs = M + (b * NUM_HEADS + h) * SEQ_LEN + rows
-    tl.store(m_ptrs, m_i + tl.log(l_i + 1e-20), mask=q_valid)
-
-    O_blk = O_blk / l_i[:, None]
-    O_ptrs = (O + off_bh_o) + row_off_q + (tl.arange(0, HEAD_DIM)[None, :].to(tl.int32) * tl.full((1,), sod, tl.int32))
-    tl.store(O_ptrs, O_blk.to(O.type.element_ty), mask=q_valid[:,None])
-
 @triton.autotune(
     [triton.Config({"BLOCK_Q": bq}, num_stages=ns, num_warps=nw)
      for bq in [32]
@@ -1004,6 +980,7 @@ class TritonAttention(torch.autograd.Function):
         M = torch.empty(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         ) 
+        O_debug = torch.randn(Q.shape, dtype=Q.dtype, device=Q.device)
 
         # ---- RoPE tables [N, P] (float32) ----
         COSX, SINX, COSY, SINY = cos_sin.tables()
@@ -1041,7 +1018,7 @@ class TritonAttention(torch.autograd.Function):
         ctx.comp_triton = comp_triton
         ctx.has_cls = has_cls
         ctx.save_for_backward(Q, K, V, O, M, COSX, SINX, COSY, SINY)
-        return O
+        return O_debug
     
 
     @staticmethod
