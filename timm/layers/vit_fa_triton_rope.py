@@ -1127,22 +1127,24 @@ class TritonAttention(torch.autograd.Function):
         
         return dQ, dK, dV, None, None, None, None
 
-class CosSinTable:
-    def __init__(self, base, H_img = 14, D = 64):
-        COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D)
-        self.COSX = COSX
-        self.COSY = COSY
-        self.SINX = SINX
-        self.SINY = SINY
-        
-    def tabels(self):
-        return self.COSX, self.SINX, self.COSY, self.SINY,
+class CosSinTable(torch.nn.Module):
+    def __init__(self, base, H_img=14, D=64, device="cuda"):
+        super().__init__()
+        COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D, device)
 
-    def _rope_pairs_tables(self, base, H_img, D, device = "cuda"):
+        # Register as buffers so they move with the module and go in state_dict
+        self.register_buffer("COSX", COSX)
+        self.register_buffer("SINX", SINX)
+        self.register_buffer("COSY", COSY)
+        self.register_buffer("SINY", SINY)
+
+    def tables(self):
+        return self.COSX, self.SINX, self.COSY, self.SINY
+
+    def _rope_pairs_tables(self, base, H_img, D, device="cuda"):
         cos_x, sin_x, cos_y, sin_y = _build_axial_rope(
             H_img, D, device, base=base
         )
-        # reduce to pairs: [N, P] where P = D//4
         COSX = cos_x[:, 0::2].contiguous()
         SINX = sin_x[:, 0::2].contiguous()
         COSY = cos_y[:, 0::2].contiguous()
