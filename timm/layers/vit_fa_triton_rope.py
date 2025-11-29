@@ -242,6 +242,9 @@ def _attn_fwd(
         l_i = tl.where(q_valid, l_i * alpha + l_ij, l_i)
         m_i = tl.where(q_valid, m_ij, m_i)
         
+        # ---- write back M and O ----
+    m_ptrs = M + (b * NUM_HEADS + h) * SEQ_LEN + rows
+    tl.store(m_ptrs, m_i + tl.log(l_i + 1e-20), mask=q_valid)
 
 
 @triton.autotune(
