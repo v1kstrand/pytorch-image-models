@@ -246,9 +246,9 @@ def _attn_fwd(
     m_ptrs = M + (b * NUM_HEADS + h) * SEQ_LEN + rows
     tl.store(m_ptrs, m_i + tl.log(l_i + 1e-20), mask=q_valid)
 
-    O_blk = O_blk / l_i[:, None]
+    """O_blk = O_blk / l_i[:, None]
     O_ptrs = (O + off_bh_o) + row_off_q + (tl.arange(0, HEAD_DIM)[None, :].to(tl.int32) * tl.full((1,), sod, tl.int32))
-    tl.store(O_ptrs, O_blk.to(O.type.element_ty), mask=q_valid[:,None])
+    tl.store(O_ptrs, O_blk.to(O.type.element_ty), mask=q_valid[:,None])"""
 
 @triton.autotune(
     [triton.Config({"BLOCK_Q": bq}, num_stages=ns, num_warps=nw)
@@ -1005,6 +1005,9 @@ class TritonAttention(torch.autograd.Function):
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         ) 
         O_debug = torch.randn(Q.shape, dtype=Q.dtype, device=Q.device)
+        """M_debug = torch.randn(
+            (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
+        ) """
 
         # ---- RoPE tables [N, P] (float32) ----
         COSX, SINX, COSY, SINY = cos_sin.tables()
