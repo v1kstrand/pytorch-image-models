@@ -241,6 +241,14 @@ def _attn_fwd(
 
         l_i = tl.where(q_valid, l_i * alpha + l_ij, l_i)
         m_i = tl.where(q_valid, m_ij, m_i)
+        
+        # ---- write back M and O ----
+    m_ptrs = M + (b * NUM_HEADS + h) * SEQ_LEN + rows
+    tl.store(m_ptrs, m_i + tl.log(l_i + 1e-20), mask=q_valid)
+
+    O_blk = O_blk / l_i[:, None]
+    O_ptrs = (O + off_bh_o) + row_off_q + (tl.arange(0, HEAD_DIM)[None, :].to(tl.int32) * tl.full((1,), sod, tl.int32))
+    tl.store(O_ptrs, O_blk.to(O.type.element_ty), mask=q_valid[:,None])
 
 @triton.autotune(
     [triton.Config({"BLOCK_Q": bq}, num_stages=ns, num_warps=nw)
