@@ -138,6 +138,7 @@ def _attn_fwd(
     # ---- gather Q pairs [BQ,P] ----
     base_Q = Q + off_bh_q
     row_off_q = rows64[:, None] * sqs_i
+    row_off_o = rows64[:, None] * sos
     qcol_xe = even * sqd_i
     qcol_xo = odd  * sqd_i
     qcol_ye = (D2_i + even) * sqd_i
@@ -246,9 +247,10 @@ def _attn_fwd(
     m_ptrs = M + (b * NUM_HEADS + h) * SEQ_LEN + rows
     tl.store(m_ptrs, m_i + tl.log(l_i + 1e-20), mask=q_valid)
 
-    """O_blk = O_blk / l_i[:, None]
-    O_ptrs = (O + off_bh_o) + row_off_q + (tl.arange(0, HEAD_DIM)[None, :].to(tl.int32) * tl.full((1,), sod, tl.int32))
-    tl.store(O_ptrs, O_blk.to(O.type.element_ty), mask=q_valid[:,None])"""
+    O_blk = O_blk / l_i[:, None]
+    d_idx = tl.arange(0, HEAD_DIM)[None, :].to(tl.int32)
+    O_ptrs = (O + off_bh_o) + row_off_o + d_idx * tl.full((1,), sod, tl.int32)
+    tl.store(O_ptrs, O_blk.to(O.type.element_ty), mask=q_valid[:, None])
 
 @triton.autotune(
     [triton.Config({"BLOCK_Q": bq}, num_stages=ns, num_warps=nw)
