@@ -1006,10 +1006,8 @@ class TritonAttention(torch.autograd.Function):
         M = torch.empty(
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         ) 
-        O_debug = torch.randn(Q.shape, dtype=Q.dtype, device=Q.device)
-        """M_debug = torch.randn(
-            (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
-        ) """
+        #O_debug = torch.randn(Q.shape, dtype=Q.dtype, device=Q.device)
+
 
         # ---- RoPE tables [N, P] (float32) ----
         COSX, SINX, COSY, SINY = cos_sin.tables()
@@ -1046,8 +1044,8 @@ class TritonAttention(torch.autograd.Function):
         ctx.softmax_scale = softmax_scale
         ctx.comp_triton = comp_triton
         ctx.has_cls = has_cls
-        ctx.save_for_backward(Q, K, V, O_debug, M, COSX, SINX, COSY, SINY)
-        return O_debug
+        ctx.save_for_backward(Q, K, V, O, M, COSX, SINX, COSY, SINY)
+        return O
     
 
     @staticmethod
