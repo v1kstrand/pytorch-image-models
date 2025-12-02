@@ -9,7 +9,6 @@ from .config import use_fused_attn
 from .pos_embed_sincos import apply_rot_embed_cat
 from .vit_fa_triton import sdpa_triton_fa
 from .vit_fa_triton_rope import sdpa_triton_fa_rope, CosSinTable
-from typing import Optional, Tuple
 
 
 @torch.fx.wrap

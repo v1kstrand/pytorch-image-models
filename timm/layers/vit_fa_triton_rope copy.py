@@ -99,14 +99,18 @@ def _attn_fwd(
     DTYPE: tl.constexpr,             # compute dtype (e.g., tl.float32 or tl.float16)
     GROUP_M: tl.constexpr,
 ):
-    tl.static_assert((HEAD_DIM % 4) == 0)
-
+    # ---- swizzled tile ids ----
     pid_m  = tl.program_id(0)
     pid_bh = tl.program_id(1)
-
-    # --- no swizzle: plain linear tiling over M ---
-    start_q = pid_m * BLOCK_Q
-    if start_q >= SEQ_LEN:
+    num_tiles_m   = tl.cdiv(SEQ_LEN, BLOCK_Q)
+    group_id      = pid_m // GROUP_M
+    tiles_in_this = tl.minimum(GROUP_M, num_tiles_m - group_id * GROUP_M)
+    m_in_grp      = pid_m - group_id * GROUP_M
+    m_in_grp_eff  = m_in_grp % tiles_in_this
+    rot           = pid_bh % tiles_in_this
+    m_swizzled    = group_id * GROUP_M + ((m_in_grp_eff + rot) % tiles_in_this)
+    start_q = m_swizzled * BLOCK_Q
+    if start_q >= SEQ_LEN or m_swizzled >= num_tiles_m:
         return
     # ---- (b,h) plane selection ----
     b = pid_bh // NUM_HEADS
@@ -138,6 +142,7 @@ def _attn_fwd(
     # ---- gather Q pairs [BQ,P] ----
     base_Q = Q + off_bh_q
     row_off_q = rows64[:, None] * sqs_i
+    row_off_o = rows64[:, None] * sos
     qcol_xe = even * sqd_i
     qcol_xo = odd  * sqd_i
     qcol_ye = (D2_i + even) * sqd_i
@@ -225,7 +230,7 @@ def _attn_fwd(
         
         S_tile = S_tile * tl.full((1,), softmax_scale, dtype=tl.float32)
         S_tile = tl.where(q_valid[:,None] & kv_valid[None,:], S_tile, -float("inf"))
-
+        
         # online softmax
         m_ij  = tl.maximum(m_i, tl.max(S_tile, axis=1))
         alpha = tl.where(q_valid, tl.exp(m_i - m_ij), 1.0)
@@ -241,14 +246,15 @@ def _attn_fwd(
 
         l_i = tl.where(q_valid, l_i * alpha + l_ij, l_i)
         m_i = tl.where(q_valid, m_ij, m_i)
-
-    # ---- write back M and O ----
+        
+        # ---- write back M and O ----
     m_ptrs = M + (b * NUM_HEADS + h) * SEQ_LEN + rows
     tl.store(m_ptrs, m_i + tl.log(l_i + 1e-20), mask=q_valid)
 
     O_blk = O_blk / l_i[:, None]
-    O_ptrs = (O + off_bh_o) + row_off_q + (tl.arange(0, HEAD_DIM)[None, :].to(tl.int32) * tl.full((1,), sod, tl.int32))
-    tl.store(O_ptrs, O_blk.to(O.type.element_ty), mask=q_valid[:,None])
+    d_idx = tl.arange(0, HEAD_DIM)[None, :].to(tl.int32)
+    O_ptrs = (O + off_bh_o) + row_off_o + d_idx * tl.full((1,), sod, tl.int32)
+    tl.store(O_ptrs, O_blk.to(O.type.element_ty), mask=q_valid[:, None])
 
 @triton.autotune(
     [triton.Config({"BLOCK_Q": bq}, num_stages=ns, num_warps=nw)
@@ -990,11 +996,10 @@ class TritonAttention(torch.autograd.Function):
         else:
             assert SEQ_LEN == N_img, f"SEQ_LEN must equal H_img*W_img when has_cls=False (got {SEQ_LEN} vs {N_img})."
 
-        
-        print("[TRITON WRAPPER] Q/K/V")
-        print("  Q.shape:", Q.shape, "Q.stride:", Q.stride())
-        print("  K.shape:", K.shape, "K.stride:", K.stride())
-        print("  V.shape:", V.shape, "V.stride:", V.stride())
+        #print("[TRITON WRAPPER] Q/K/V")
+        #print("  Q.shape:", Q.shape, "Q.stride:", Q.stride())
+        #print("  K.shape:", K.shape, "K.stride:", K.stride())
+        #print("  V.shape:", V.shape, "V.stride:", V.stride())
     
         comp_triton = _sdpa_comp_dtype(Q)
         softmax_scale = 1.0 / (HEAD_DIM ** 0.5)
@@ -1046,8 +1051,8 @@ class TritonAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dO):
-        print("[TRITON WRAPPER] Q/K/V")
-        print("  dO.shape:", dO.shape, "dO.stride:", dO.stride())
+        #print("[TRITON WRAPPER] Q/K/V")
+        #print("  dO.shape:", dO.shape, "dO.stride:", dO.stride())
         Q, K, V, O, M, COSX, SINX, COSY, SINY = ctx.saved_tensors
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         
@@ -1131,8 +1136,6 @@ class CosSinTable(torch.nn.Module):
     def __init__(self, base, H_img=14, D=64, device="cuda"):
         super().__init__()
         COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D, device)
-
-        # Register as buffers so they move with the module and go in state_dict
         self.register_buffer("COSX", COSX)
         self.register_buffer("SINX", SINX)
         self.register_buffer("COSY", COSY)
