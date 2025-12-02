@@ -1074,7 +1074,6 @@ class CosSinTable(torch.nn.Module):
         super().__init__()
         COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D, device)
 
-        # Register as buffers so they move with the module and go in state_dict
         self.register_buffer("COSX", COSX)
         self.register_buffer("SINX", SINX)
         self.register_buffer("COSY", COSY)
