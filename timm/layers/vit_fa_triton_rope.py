@@ -1095,10 +1095,4 @@ class CosSinTable(torch.nn.Module):
     
     
 def sdpa_triton_fa_rope(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, cos_sin: CosSinTable):
-    """
-    Triton Scaled Dot-Product Attention (SDPA) with 2D Axial RoPE.
-
-    Q, K, V: [B, H, S, D] (contiguous)
-    S must be 1 + H_img*W_img if has_cls=True, else S == H_img*W_img.
-    """
     return TritonAttention.apply(Q, K, V, cos_sin)
