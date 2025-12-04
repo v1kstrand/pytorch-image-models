@@ -487,8 +487,8 @@ def profile_train_step_online(
     # Profiler schedule: you can also add `wait=` if you want initial completely-ignored steps
     prof_schedule = schedule(
         wait=0,                    # steps with profiler attached but not recording
-        warmup=warmup_steps,       # record, but don't export
-        active=profiled_steps,     # record AND export
+        warmup=10,       # record, but don't export
+        active=10,     # record AND export
         repeat=1,
     )
 
