@@ -218,7 +218,6 @@ class AttentionRope(nn.Module):
             half = getattr(self, 'rotate_half', False)
             q = torch.cat([q[:, :, :npt, :], apply_rot_embed_cat(q[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
             k = torch.cat([k[:, :, :npt, :], apply_rot_embed_cat(k[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
-            assert False
             
         if self.fused_attn == 3:
             x = sdpa_triton_fa_rope(q, k, v, self.cos_sin_table)
