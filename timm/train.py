@@ -459,7 +459,7 @@ def profile_train_step_online(
     Open the output in https://ui.perfetto.dev or chrome://tracing.
     If `log_dir` is set, you can also inspect via TensorBoard (PyTorch Profiler tab).
     """
-    
+    print("[Profiler] Profiling train step...")
     num_classes = 1000
     batch_size = 1024
     img_size = 224
@@ -1166,6 +1166,12 @@ def main(override_args=None):
                 num_updates_total=num_epochs * updates_per_epoch,
                 naflex_mode=naflex_mode,
             )
+            
+            if args.profile:
+                del optimizer
+                profile_train_step_online(model)
+                print("[Profiler] Profiling train step... done")
+                return
 
             if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                 if utils.is_primary(args):
@@ -1246,11 +1252,6 @@ def main(override_args=None):
             if eval_metrics is not None:
                 latest_results['validation'] = eval_metrics
             results.append(latest_results)
-            
-            if args.profile:
-                del optimizer
-                profile_train_step_online(model)
-                return
 
     except KeyboardInterrupt:
         pass
