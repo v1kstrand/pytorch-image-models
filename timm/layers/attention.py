@@ -213,10 +213,9 @@ class AttentionRope(nn.Module):
 
         q, k = self.q_norm(q), self.k_norm(k)
 
-        if rope is not None and self.fused_attn != 3:
+        if rope is not None and self.fused_attn != 3 and False:
             npt = self.num_prefix_tokens
             half = getattr(self, 'rotate_half')
-            half = True
             q = torch.cat([q[:, :, :npt, :], apply_rot_embed_cat(q[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
             k = torch.cat([k[:, :, :npt, :], apply_rot_embed_cat(k[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
             
