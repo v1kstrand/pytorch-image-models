@@ -493,7 +493,7 @@ def profile_train_step_online(
     )
 
     total_steps = warmup_steps + profiled_steps
-
+    print(f"[Profiler] Profiling {total_steps} steps...")
     with profile(
         activities=[ProfilerActivity.CUDA],
         schedule=prof_schedule,
@@ -504,7 +504,8 @@ def profile_train_step_online(
         with_flops=True,
         with_modules=True,
     ) as prof:
-        for _ in range(total_steps):
+        for step in range(total_steps):
+            print(f"[Profiler] Step {step}")
             optimizer.zero_grad(set_to_none=True)
 
             with torch.autocast(device_type="cuda", dtype=autocast_dtype):
