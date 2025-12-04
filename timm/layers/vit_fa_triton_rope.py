@@ -22,14 +22,11 @@ def _build_axial_rope(
     N = side_len
     per_axis = head_dim // 2
     half = per_axis // 2  # distinct angles (pairs) per axis
-
     # frequency ladder ω_k
     inv_freq = base ** (-torch.arange(0, half, device=device) / half)  # [half]
-
     # 1-D positions reused for both axes
     pos = torch.arange(N, device=device)  # [N]
     theta = torch.outer(pos, inv_freq)  # [N, half]
-
     # duplicate each angle for pairwise rotation -> [N, per_axis]
     cos_1d = torch.cos(theta).repeat_interleave(2, dim=-1)
     sin_1d = torch.sin(theta).repeat_interleave(2, dim=-1)
