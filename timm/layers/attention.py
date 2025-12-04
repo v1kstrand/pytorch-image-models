@@ -84,8 +84,6 @@ class Attention(nn.Module):
         q, k = self.q_norm(q), self.k_norm(k)
         
         if self.fused_attn == 3:
-            #x = sdpa_triton_fa(q, k, v, self.probe)
-            #self.stride = (q.stride(), k.stride(), v.stride())
             x = sdpa_triton_fa_rope(q, k, v, self.cos_sin_table)
         elif self.fused_attn == 2:
             x = sdpa_triton_fa(q, k, v)
@@ -183,6 +181,7 @@ class AttentionRope(nn.Module):
         self.norm = norm_layer(attn_dim, **dd) if scale_norm else nn.Identity()
         self.proj = nn.Linear(attn_dim, dim, bias=proj_bias, **dd)
         self.proj_drop = nn.Dropout(proj_drop)
+        print("INIT ROPE")
 
     def forward(
             self,

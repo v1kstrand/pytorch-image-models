@@ -155,6 +155,7 @@ def set_fused_attn(enable: bool = True, experimental: bool = False):
         _USE_FUSED_ATTN = 1
     else:
         _USE_FUSED_ATTN = 0
+   
 
 
 def use_reentrant_ckpt() -> bool:
