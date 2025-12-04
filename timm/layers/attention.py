@@ -217,7 +217,6 @@ class AttentionRope(nn.Module):
             npt = self.num_prefix_tokens
             half = getattr(self, 'rotate_half')
             half = True
-            print("rope", half)
             q = torch.cat([q[:, :, :npt, :], apply_rot_embed_cat(q[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
             k = torch.cat([k[:, :, :npt, :], apply_rot_embed_cat(k[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
             
