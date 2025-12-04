@@ -1248,6 +1248,7 @@ def main(override_args=None):
             results.append(latest_results)
             
             if args.profile:
+                del optimizer
                 profile_train_step_online(model)
                 return
 
