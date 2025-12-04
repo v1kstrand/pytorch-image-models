@@ -165,6 +165,7 @@ class AttentionRope(nn.Module):
         self.num_prefix_tokens = num_prefix_tokens
         self.fused_attn = use_fused_attn()
         self.rotate_half = rotate_half
+        self.cos_sin_table = CosSinTable(100) if self.fused_attn == 3 else None
 
         if qkv_fused:
             self.qkv = nn.Linear(dim, attn_dim * 3, bias=qkv_bias, **dd)
@@ -212,14 +213,16 @@ class AttentionRope(nn.Module):
 
         q, k = self.q_norm(q), self.k_norm(k)
 
-        if rope is not None:
+        if rope is not None or self.fused_attn != 3:
             npt = self.num_prefix_tokens
             half = getattr(self, 'rotate_half', False)
             q = torch.cat([q[:, :, :npt, :], apply_rot_embed_cat(q[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
             k = torch.cat([k[:, :, :npt, :], apply_rot_embed_cat(k[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
             print("ROPE")
-
-        if self.fused_attn:
+            
+        if self.fused_attn == 3:
+            x = sdpa_triton_fa_rope(q, k, v, self.cos_sin_table)
+        elif self.fused_attn:
             x = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attn_mask,
