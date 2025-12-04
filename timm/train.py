@@ -1146,7 +1146,7 @@ def main(override_args=None):
                 dataset_train.set_epoch(epoch)
             elif args.distributed and hasattr(loader_train.sampler, 'set_epoch'):
                 loader_train.sampler.set_epoch(epoch)
-
+            print(args.profile)
             train_metrics = train_one_epoch(
                 epoch,
                 model,
