@@ -438,6 +438,89 @@ group.add_argument('--FA_kernel', default='1', type=str,
 
 group.add_argument('--base-dir', default="/notebooks/output/train", type=str)
 group.add_argument('--yaml-config-path', default="/notebooks/params_timm.yaml", type=str)
+group.add_argument('--profile', action='store_true', default=False)
+
+from torch.profiler import (
+    profile,
+    ProfilerActivity,
+    schedule,
+)
+
+
+def profile_train_step_online(
+    model: torch.nn.Module,
+):
+    """
+    Profile a full train step (fwd + loss + bwd + opt.step) and export a Chrome/Perfetto trace.
+
+    - `warmup_steps`   -> number of warmup steps INSIDE the profiler (recorded but not exported)
+    - `profiled_steps` -> number of active steps exported to trace
+
+    Open the output in https://ui.perfetto.dev or chrome://tracing.
+    If `log_dir` is set, you can also inspect via TensorBoard (PyTorch Profiler tab).
+    """
+    
+    num_classes = 1000
+    batch_size = 1024
+    img_size = 224
+    inputs = torch.randn(batch_size, 3, img_size, img_size, requires_grad=True)
+    targets = torch.randint(0, num_classes, (batch_size,))
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.05)
+    trace_path="rope_torch_step.json",
+    device="cuda",              # or "cpu" if no GPU
+    warmup_steps=10,             # profiler warmup iterations
+    profiled_steps=10,           # iterations to actually record
+    autocast_dtype=torch.bfloat16,
+    device = "cuda"
+    inputs = inputs.to(device)
+    targets = targets.to(device)
+    criterion = criterion.to(device)
+    
+    
+    with torch.autocast(device_type="cuda", dtype=autocast_dtype):
+        out_temp = model(inputs)
+        loss = criterion(out_temp, targets)
+        loss.backward()
+        optimizer.step()
+
+    # Profiler schedule: you can also add `wait=` if you want initial completely-ignored steps
+    prof_schedule = schedule(
+        wait=0,                    # steps with profiler attached but not recording
+        warmup=warmup_steps,       # record, but don't export
+        active=profiled_steps,     # record AND export
+        repeat=1,
+    )
+
+    total_steps = warmup_steps + profiled_steps
+
+    with profile(
+        activities=[ProfilerActivity.CUDA],
+        schedule=prof_schedule,
+        on_trace_ready=None,
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True,
+        with_flops=True,
+        with_modules=True,
+    ) as prof:
+        for _ in range(total_steps):
+            optimizer.zero_grad(set_to_none=True)
+
+            with torch.autocast(device_type="cuda", dtype=autocast_dtype):
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+
+            loss.backward()
+            optimizer.step()
+
+            # tell profiler "one step done" so it can advance wait/warmup/active
+            prof.step()
+
+    # Export last collected trace to Chrome/Perfetto JSON
+    prof.export_chrome_trace(trace_path)
+    print(f"[Profiler] Exported train-step trace to: {trace_path}")
+    print("Open https://ui.perfetto.dev and drop this file to inspect fwd + bwd kernels.")
 
 def update_config_file(args, key, value):
     r_yaml = YAML(typ="rt")
@@ -1163,6 +1246,10 @@ def main(override_args=None):
             if eval_metrics is not None:
                 latest_results['validation'] = eval_metrics
             results.append(latest_results)
+            
+            if args.profile:
+                profile_train_step_online(model)
+                return
 
     except KeyboardInterrupt:
         pass
