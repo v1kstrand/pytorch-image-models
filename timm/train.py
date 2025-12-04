@@ -467,10 +467,10 @@ def profile_train_step_online(
     targets = torch.randint(0, num_classes, (batch_size,))
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.05)
-    trace_path="rope_torch_step.json",
-    device="cuda",              # or "cpu" if no GPU
-    warmup_steps=10,             # profiler warmup iterations
-    profiled_steps=10,           # iterations to actually record
+    trace_path="rope_torch_step.json"
+    device="cuda",             # or "cpu" if no GPU
+    warmup_steps=10            # profiler warmup iterations
+    profiled_steps=10          # iterations to actually record
     autocast_dtype=torch.bfloat16
     device = "cuda"
     inputs = inputs.to(device)
@@ -487,8 +487,8 @@ def profile_train_step_online(
     # Profiler schedule: you can also add `wait=` if you want initial completely-ignored steps
     prof_schedule = schedule(
         wait=0,                    # steps with profiler attached but not recording
-        warmup=10,       # record, but don't export
-        active=10,     # record AND export
+        warmup=warmup_steps,       # record, but don't export
+        active=profiled_steps,     # record AND export
         repeat=1,
     )
 
