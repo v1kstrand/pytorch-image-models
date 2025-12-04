@@ -567,9 +567,7 @@ def main(override_args=None):
         **args.model_kwargs,
     )
     
-    if args.return_model:
-        print("Returning model")
-        return model
+    
     
     if args.head_init_scale is not None:
         with torch.no_grad():
@@ -646,6 +644,10 @@ def main(override_args=None):
             _logger.info(
                 f'Learning rate ({args.lr}) calculated from base learning rate ({args.lr_base}) '
                 f'and effective global batch size ({global_batch_size}) with {args.lr_base_scale} scaling.')
+            
+    if args.return_model:
+        print("Returning model")
+        return model
 
     optimizer = create_optimizer_v2(
         model,
