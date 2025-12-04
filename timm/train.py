@@ -471,7 +471,7 @@ def profile_train_step_online(
     device="cuda",              # or "cpu" if no GPU
     warmup_steps=10,             # profiler warmup iterations
     profiled_steps=10,           # iterations to actually record
-    autocast_dtype=torch.bfloat16,
+    autocast_dtype=torch.bfloat16
     device = "cuda"
     inputs = inputs.to(device)
     targets = targets.to(device)
