@@ -455,11 +455,8 @@ def profile_train_step_online(
     num_classes = 1000,
     batch_size = 1024,
     img_size = 224,
-    criterion = nn.CrossEntropyLoss(),
-    trace_dir="profiler",
-    trace_file="rope_torch_step.json",
+    criterion = nn.CrossEntropyLoss,
     device="cuda",
-    wait_steps=0,
     warmup_steps=10,
     profiled_steps=5,
     autocast_dtype=torch.bfloat16,
@@ -468,17 +465,15 @@ def profile_train_step_online(
     inputs = torch.randn(batch_size, 3, img_size, img_size, requires_grad=True, device=device)
     targets = torch.randint(0, num_classes, (batch_size,), device=device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.05)
-    criterion = criterion.to(device)
+    criterion = criterion().to(device)
     
     print(f"[Profiler] Profiling {warmup_steps} warm-up steps...")
 
     for _ in range(warmup_steps):
         optimizer.zero_grad(set_to_none=True)
-
         with torch.autocast(device_type="cuda", dtype=autocast_dtype):
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-
         loss.backward()
         optimizer.step()
     
