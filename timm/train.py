@@ -499,7 +499,6 @@ def profile_train_step_online(
             optimizer.step()
             prof.step()
 
-    # Export last collected trace to Chrome/Perfetto JSON
     trace_path = os.path.join(trace_dir, trace_file)
     os.makedirs(trace_dir, exist_ok=True)
     prof.export_chrome_trace(trace_path)
