@@ -448,6 +448,8 @@ from torch.profiler import (
 )
 
 
+
+
 def profile_train_step_online(
     model: torch.nn.Module,
     num_classes = 1000,
@@ -462,7 +464,62 @@ def profile_train_step_online(
     profiled_steps=5,
     autocast_dtype=torch.bfloat16,
 ):
-    print("[Profiler] Profiling train step...")
+    print("[Profiler] Profiling train step...", batch_size)
+    inputs = torch.randn(batch_size, 3, img_size, img_size, requires_grad=True, device=device)
+    targets = torch.randint(0, num_classes, (batch_size,), device=device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.05)
+    criterion = criterion.to(device)
+    
+    print(f"[Profiler] Profiling {warmup_steps} warm-up steps...")
+
+    for _ in range(warmup_steps):
+        optimizer.zero_grad(set_to_none=True)
+
+        with torch.autocast(device_type="cuda", dtype=autocast_dtype):
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+
+        loss.backward()
+        optimizer.step()
+    
+    print(f"[Profiler] Profiling {profiled_steps} steps...")
+    
+    torch.cuda.synchronize()
+    total_start = time.perf_counter()
+    
+    for _ in range(profiled_steps):
+
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type="cuda", dtype=autocast_dtype):
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
+    torch.cuda.synchronize()
+    total_end = time.perf_counter()
+    total_s = total_end - total_start
+    avg_ms = (total_s / profiled_steps) * 1000.0
+
+    print(f"[Timing] Total: {total_s:.3f} s for {profiled_steps} steps "
+        f"(avg {avg_ms:.3f} ms/step)")
+
+
+def _profile_train_step_online(
+    model: torch.nn.Module,
+    num_classes = 1000,
+    batch_size = 1024,
+    img_size = 224,
+    criterion = nn.CrossEntropyLoss(),
+    trace_dir="profiler",
+    trace_file="rope_torch_step.json",
+    device="cuda",
+    wait_steps=0,
+    warmup_steps=10,
+    profiled_steps=5,
+    autocast_dtype=torch.bfloat16,
+):
+    print("[Profiler] Profiling train step...", batch_size)
     inputs = torch.randn(batch_size, 3, img_size, img_size, requires_grad=True, device=device)
     targets = torch.randint(0, num_classes, (batch_size,), device=device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.05)
