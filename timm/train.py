@@ -457,7 +457,7 @@ def profile_train_step_online(
     trace_dir="profiler",
     trace_file="rope_torch_step.json",
     device="cuda",
-    wait_steps=2,
+    wait_steps=0,
     warmup_steps=10,
     profiled_steps=5,
     autocast_dtype=torch.bfloat16,
