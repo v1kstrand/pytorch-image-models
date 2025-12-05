@@ -488,7 +488,7 @@ def profile_train_step_online(
         with_modules=True,
     ) as prof:
         for step in range(total_steps):
-            print(f"[Profiler] Step {step}")
+            print(f"[Profiler] Step {step + 1}")
             optimizer.zero_grad(set_to_none=True)
 
             with torch.autocast(device_type="cuda", dtype=autocast_dtype):
