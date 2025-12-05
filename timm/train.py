@@ -439,6 +439,7 @@ group.add_argument('--FA_kernel', default='1', type=str,
 group.add_argument('--base-dir', default="/notebooks/output/train", type=str)
 group.add_argument('--yaml-config-path', default="/notebooks/params_timm.yaml", type=str)
 group.add_argument('--profile', action='store_true', default=False)
+group.add_argument('--profile_kwargs', default="{}", type=json.loads)
 
 from torch.profiler import (
     profile,
