@@ -1153,7 +1153,7 @@ def main(override_args=None):
             
             if args.profile:
                 del optimizer
-                profile_train_step_online(model)
+                profile_train_step_online(model, **args.profile_kwargs)
                 print("[Profiler] Profiling train step... done")
                 return
 
