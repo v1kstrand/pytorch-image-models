@@ -1046,7 +1046,7 @@ class TritonAttention(torch.autograd.Function):
         
         return dQ, dK, dV, None, None, None, None
 
-class CosSinTable(nn.Module):
+class CosSinTable(torch.nn.Module):
     """
     Holds pairwise axial RoPE tables for an H_img x H_img grid.
 
