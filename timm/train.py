@@ -449,6 +449,15 @@ from torch.profiler import (
 
 def profile_train_step_online(
     model: torch.nn.Module,
+    num_classes = 1000,
+    batch_size = 1024,
+    img_size = 224,
+    criterion = nn.CrossEntropyLoss(),
+    trace_path="rope_torch_step.json",
+    device="cuda",
+    warmup_steps=10,
+    profiled_steps=10,
+    autocast_dtype=torch.bfloat16,
 ):
     """
     Profile a full train step (fwd + loss + bwd + opt.step) and export a Chrome/Perfetto trace.
@@ -460,23 +469,11 @@ def profile_train_step_online(
     If `log_dir` is set, you can also inspect via TensorBoard (PyTorch Profiler tab).
     """
     print("[Profiler] Profiling train step...")
-    num_classes = 1000
-    batch_size = 1024
-    img_size = 224
-    inputs = torch.randn(batch_size, 3, img_size, img_size, requires_grad=True)
-    targets = torch.randint(0, num_classes, (batch_size,))
-    criterion = nn.CrossEntropyLoss()
+
+    inputs = torch.randn(batch_size, 3, img_size, img_size, requires_grad=True).to(device)
+    targets = torch.randint(0, num_classes, (batch_size,)).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.05)
-    trace_path="rope_torch_step.json"
-    device="cuda",             # or "cpu" if no GPU
-    warmup_steps=10            # profiler warmup iterations
-    profiled_steps=10          # iterations to actually record
-    autocast_dtype=torch.bfloat16
-    device = "cuda"
-    inputs = inputs.to(device)
-    targets = targets.to(device)
     criterion = criterion.to(device)
-    
     
     with torch.autocast(device_type="cuda", dtype=autocast_dtype):
         out_temp = model(inputs)
