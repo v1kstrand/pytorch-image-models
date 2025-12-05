@@ -8,7 +8,10 @@ from ._fx import register_notrace_function
 from .config import use_fused_attn
 from .pos_embed_sincos import apply_rot_embed_cat
 from .vit_fa_triton import sdpa_triton_fa
+from .vit_fa_triton_rope_copy import sdpa_triton_fa_rope as sdpa_triton_fa_rope_copy
+from .vit_fa_triton_rope_copy import CosSinTable as CosSinTable_copy
 from .vit_fa_triton_rope import sdpa_triton_fa_rope, CosSinTable
+
 
 
 @torch.fx.wrap
@@ -166,6 +169,10 @@ class AttentionRope(nn.Module):
         self.fused_attn = use_fused_attn()
         self.rotate_half = rotate_half
         self.cos_sin_table = CosSinTable(100) if self.fused_attn == 3 else None
+        self.sdpa_triton_fa_rope = sdpa_triton_fa_rope
+        if self.fused_attn == 4:
+            self.cos_sin_table = CosSinTable_copy(100)
+            self.sdpa_triton_fa_rope = sdpa_triton_fa_rope_copy
 
         if qkv_fused:
             self.qkv = nn.Linear(dim, attn_dim * 3, bias=qkv_bias, **dd)
@@ -213,14 +220,14 @@ class AttentionRope(nn.Module):
 
         q, k = self.q_norm(q), self.k_norm(k)
 
-        if rope is not None and self.fused_attn != 3:
+        if rope is not None and self.fused_attn not in (3, 4):
             npt = self.num_prefix_tokens
             half = getattr(self, 'rotate_half')
             q = torch.cat([q[:, :, :npt, :], apply_rot_embed_cat(q[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
             k = torch.cat([k[:, :, :npt, :], apply_rot_embed_cat(k[:, :, npt:, :], rope, half=half)], dim=2).type_as(v)
             
-        if self.fused_attn == 3:
-            x = sdpa_triton_fa_rope(q, k, v, self.cos_sin_table)
+        if self.fused_attn in (3, 4):
+            x = self.sdpa_triton_fa_rope(q, k, v, self.cos_sin_table)
         elif self.fused_attn == 1:
             x = F.scaled_dot_product_attention(
                 q, k, v,

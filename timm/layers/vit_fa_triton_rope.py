@@ -933,7 +933,6 @@ class TritonAttention(torch.autograd.Function):
 
         # ---- RoPE tables [N, P] (float32) ----
         COSP, SINP, = cos_sin.tables()
-        P_pairs = HEAD_DIM // 4
 
         # ---- Launch ----
         grid = lambda args: (
