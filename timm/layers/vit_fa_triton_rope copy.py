@@ -2,13 +2,10 @@ import torch
 import triton
 import triton.language as tl
 
-"""GROUP_NM_SWEEP = [4, 8]
-NUM_STAGES_SWEEP = [2, 3, 4]
-NUM_WARPS_SWEEP = [2, 4]"""
+GROUP_NM_SWEEP = [2, 4, 8]
+NUM_STAGES_SWEEP = [2, 3, 4, 5]
+NUM_WARPS_SWEEP = [2, 4]
 
-GROUP_NM_SWEEP = [4]
-NUM_STAGES_SWEEP = [3]
-NUM_WARPS_SWEEP = [2]
 KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]
 
 def _build_axial_rope(
@@ -25,14 +22,11 @@ def _build_axial_rope(
     N = side_len
     per_axis = head_dim // 2
     half = per_axis // 2  # distinct angles (pairs) per axis
-
     # frequency ladder ω_k
     inv_freq = base ** (-torch.arange(0, half, device=device) / half)  # [half]
-
     # 1-D positions reused for both axes
     pos = torch.arange(N, device=device)  # [N]
     theta = torch.outer(pos, inv_freq)  # [N, half]
-
     # duplicate each angle for pairwise rotation -> [N, per_axis]
     cos_1d = torch.cos(theta).repeat_interleave(2, dim=-1)
     sin_1d = torch.sin(theta).repeat_interleave(2, dim=-1)
@@ -128,25 +122,17 @@ def _attn_fwd(
     cols    = tl.arange(0, BLOCK_KV)                     # [BKV]
     pair_ix = tl.arange(0, P).to(tl.int32)
 
-    sqs_i = tl.full((1,), sqs, tl.int32)
-    sqd_i = tl.full((1,), sqd, tl.int32)
-    sks_i = tl.full((1,), sks, tl.int32)
-    skd_i = tl.full((1,), skd, tl.int32)
-    svs_i = tl.full((1,), svs, tl.int32)
-    svd_i = tl.full((1,), svd, tl.int32)
-    D2_i  = tl.full((1,), D2,  tl.int32)
-
     even = (2 * pair_ix)
     odd  = (2 * pair_ix + 1)
 
     # ---- gather Q pairs [BQ,P] ----
     base_Q = Q + off_bh_q
-    row_off_q = rows64[:, None] * sqs_i
+    row_off_q = rows64[:, None] * sqs
     row_off_o = rows64[:, None] * sos
-    qcol_xe = even * sqd_i
-    qcol_xo = odd  * sqd_i
-    qcol_ye = (D2_i + even) * sqd_i
-    qcol_yo = (D2_i + odd ) * sqd_i
+    qcol_xe = even * sqd
+    qcol_xo = odd  * sqd
+    qcol_ye = (D2 + even) * sqd
+    qcol_yo = (D2 + odd ) * sqd
 
     Qxe = tl.load(base_Q + row_off_q + qcol_xe[None,:], mask=q_valid[:,None], other=0.).to(DTYPE)
     Qxo = tl.load(base_Q + row_off_q + qcol_xo[None,:], mask=q_valid[:,None], other=0.).to(DTYPE)
@@ -192,15 +178,15 @@ def _attn_fwd(
 
         # gather K pairs -> [P,BKV]
         base_K = K + off_bh_k
-        krow_xe = even * skd_i
-        krow_xo = odd  * skd_i
-        krow_ye = (D2_i + even) * skd_i
-        krow_yo = (D2_i + odd ) * skd_i
+        krow_xe = even * skd
+        krow_xo = odd  * skd
+        krow_ye = (D2 + even) * skd
+        krow_yo = (D2 + odd ) * skd
 
-        Kxe = tl.load(base_K + krow_xe[:,None] + kv_cols64_k * sks_i, mask=kv_valid[None,:], other=0.).to(DTYPE)
-        Kxo = tl.load(base_K + krow_xo[:,None] + kv_cols64_k * sks_i, mask=kv_valid[None,:], other=0.).to(DTYPE)
-        Kye = tl.load(base_K + krow_ye[:,None] + kv_cols64_k * sks_i, mask=kv_valid[None,:], other=0.).to(DTYPE)
-        Kyo = tl.load(base_K + krow_yo[:,None] + kv_cols64_k * sks_i, mask=kv_valid[None,:], other=0.).to(DTYPE)
+        Kxe = tl.load(base_K + krow_xe[:,None] + kv_cols64_k * sks, mask=kv_valid[None,:], other=0.).to(DTYPE)
+        Kxo = tl.load(base_K + krow_xo[:,None] + kv_cols64_k * sks, mask=kv_valid[None,:], other=0.).to(DTYPE)
+        Kye = tl.load(base_K + krow_ye[:,None] + kv_cols64_k * sks, mask=kv_valid[None,:], other=0.).to(DTYPE)
+        Kyo = tl.load(base_K + krow_yo[:,None] + kv_cols64_k * sks, mask=kv_valid[None,:], other=0.).to(DTYPE)
 
         # K-side RoPE (pair-major [P,BKV]); CLS col bypass
         lin_k   = kv_cols - HAS_CLS
@@ -239,7 +225,7 @@ def _attn_fwd(
 
         # accumulate O
         d_idx  = tl.arange(0, HEAD_DIM)[None, :].to(tl.int32)    # [1, D]
-        V_ptrs = (V + off_bh_v) + kv_cols64_v * svs_i + d_idx * svd_i  # [BKV, D]
+        V_ptrs = (V + off_bh_v) + kv_cols64_v * svs + d_idx * svd  # [BKV, D]
         V_blk  = tl.load(V_ptrs, mask=kv_valid[:, None], other=0.).to(DTYPE)
         O_blk  = O_blk * alpha[:, None]
         O_blk  = tl.dot(P_blk.to(DTYPE), V_blk, O_blk)                        # (BQ,BKV) @ (BKV,D) + O_blk
@@ -258,8 +244,7 @@ def _attn_fwd(
 
 @triton.autotune(
     [triton.Config({"BLOCK_Q": bq}, num_stages=ns, num_warps=nw)
-     for bq in [32]
-     #for bq in [32, 64, 128]
+     for bq in [32, 64, 128]
      for ns in NUM_STAGES_SWEEP
      for nw in NUM_WARPS_SWEEP],
     key=KEY_CACHE,
@@ -386,32 +371,12 @@ def _attn_bwd_dk_dv_rope(
     # -------------------------
     # 2) base offsets & strides
     # -------------------------
-    off_bh_q  = (b * sqb   + h * sqh  ).to(tl.int32)
-    off_bh_k  = (b * skb   + h * skh  ).to(tl.int32)
-    off_bh_v  = (b * svb   + h * svh  ).to(tl.int32)
-    off_bh_do = (b * sob   + h * soh  ).to(tl.int32)
-    off_bh_dk = (b * s_dkb + h * s_dkh).to(tl.int32)
-    off_bh_dv = (b * s_dvb + h * s_dvh).to(tl.int32)
-
-    sqs_i   = tl.full((1,), sqs,   tl.int32)
-    sqd_i   = tl.full((1,), sqd,   tl.int32)
-    sks_i   = tl.full((1,), sks,   tl.int32)
-    skd_i   = tl.full((1,), skd,   tl.int32)
-    svs_i   = tl.full((1,), svs,   tl.int32)
-    svd_i   = tl.full((1,), svd,   tl.int32)
-    sos_i   = tl.full((1,), sos,   tl.int32)
-    sod_i   = tl.full((1,), sod,   tl.int32)
-    s_dks_i = tl.full((1,), s_dks, tl.int32)
-    s_dkd_i = tl.full((1,), s_dkd, tl.int32)
-
-    cosx_s_i = tl.full((1,), cosx_s, tl.int32)
-    cosx_p_i = tl.full((1,), cosx_p, tl.int32)
-    sinx_s_i = tl.full((1,), sinx_s, tl.int32)
-    sinx_p_i = tl.full((1,), sinx_p, tl.int32)
-    cosy_s_i = tl.full((1,), cosy_s, tl.int32)
-    cosy_p_i = tl.full((1,), cosy_p, tl.int32)
-    siny_s_i = tl.full((1,), siny_s, tl.int32)
-    siny_p_i = tl.full((1,), siny_p, tl.int32)
+    off_bh_q  = (b * sqb   + h * sqh  )
+    off_bh_k  = (b * skb   + h * skh  )
+    off_bh_v  = (b * svb   + h * svh  )
+    off_bh_do = (b * sob   + h * soh  )
+    off_bh_dk = (b * s_dkb + h * s_dkh)
+    off_bh_dv = (b * s_dvb + h * s_dvh)
 
     pair_ix = tl.arange(0, P).to(tl.int32)   # [P]
     even    = 2 * pair_ix                   # 0,2,4,...
@@ -430,7 +395,7 @@ def _attn_bwd_dk_dv_rope(
 
     # V tile [BKV, D]
     base_V = V + off_bh_v
-    V_ptrs = base_V + k_idx64[:, None] * svs_i + d_idx * svd_i
+    V_ptrs = base_V + k_idx64[:, None] * svs + d_idx * svd
     V_block = tl.load(V_ptrs,mask=kv_valid[:, None],other=0.0,).to(DTYPE)  # [BKV, D]
 
     # -------------------------
@@ -439,15 +404,15 @@ def _attn_bwd_dk_dv_rope(
     base_K   = K + off_bh_k
     k_idx64b = k_idx64[None, :]  # [1,BKV]
 
-    krow_xe = even * skd_i
-    krow_xo = odd  * skd_i
-    krow_ye = (D2_i + even) * skd_i
-    krow_yo = (D2_i + odd ) * skd_i
+    krow_xe = even * skd
+    krow_xo = odd  * skd
+    krow_ye = (D2 + even) * skd
+    krow_yo = (D2 + odd ) * skd
 
-    Kxe = tl.load(base_K + krow_xe[:, None] + k_idx64b * sks_i,mask=kv_valid[None, :],other=0.0).to(DTYPE)# [P, BKV]
-    Kxo = tl.load(base_K + krow_xo[:, None] + k_idx64b * sks_i,mask=kv_valid[None, :],other=0.0).to(DTYPE)
-    Kye = tl.load(base_K + krow_ye[:, None] + k_idx64b * sks_i,mask=kv_valid[None, :],other=0.0).to(DTYPE)
-    Kyo = tl.load(base_K + krow_yo[:, None] + k_idx64b * sks_i,mask=kv_valid[None, :],other=0.0).to(DTYPE)
+    Kxe = tl.load(base_K + krow_xe[:, None] + k_idx64b * sks,mask=kv_valid[None, :],other=0.0).to(DTYPE)# [P, BKV]
+    Kxo = tl.load(base_K + krow_xo[:, None] + k_idx64b * sks,mask=kv_valid[None, :],other=0.0).to(DTYPE)
+    Kye = tl.load(base_K + krow_ye[:, None] + k_idx64b * sks,mask=kv_valid[None, :],other=0.0).to(DTYPE)
+    Kyo = tl.load(base_K + krow_yo[:, None] + k_idx64b * sks,mask=kv_valid[None, :],other=0.0).to(DTYPE)
 
     # RoPE positions for keys
     lin_k = k_idx - HAS_CLS
@@ -457,10 +422,10 @@ def _attn_bwd_dk_dv_rope(
     pair_ix_col = pair_ix[:, None]      # [P,1]
     lin_k_row   = lin_k[None, :]        # [1,BKV]
 
-    cxk = pair_ix_col * cosx_p_i + lin_k_row * cosx_s_i
-    sxk = pair_ix_col * sinx_p_i + lin_k_row * sinx_s_i
-    cyk = pair_ix_col * cosy_p_i + lin_k_row * cosy_s_i
-    syk = pair_ix_col * siny_p_i + lin_k_row * siny_s_i
+    cxk = pair_ix_col * cosx_p + lin_k_row * cosx_s
+    sxk = pair_ix_col * sinx_p + lin_k_row * sinx_s
+    cyk = pair_ix_col * cosy_p + lin_k_row * cosy_s
+    syk = pair_ix_col * siny_p + lin_k_row * siny_s
 
     CX_k = tl.load(COSX + cxk, mask=kv_valid[None, :], other=0.0).to(DTYPE)
     SX_k = tl.load(SINX + sxk, mask=kv_valid[None, :], other=0.0).to(DTYPE)
@@ -501,16 +466,16 @@ def _attn_bwd_dk_dv_rope(
         mask_qk = q_valid[:, None] & kv_valid[None, :]
 
         # ---- dO tile [BQ, D] ----
-        dO_ptrs = base_dO + rows64[:, None] * sos_i + d_idx * sod_i
+        dO_ptrs = base_dO + rows64[:, None] * sos + d_idx * sod
         dO_block = tl.load(dO_ptrs,mask=q_valid[:, None],other=0.0).to(DTYPE)  # [BQ, D]
 
         # ---- Q pairs [BQ, P] ----
-        row_off_q = rows64[:, None] * sqs_i
+        row_off_q = rows64[:, None] * sqs
 
-        qcol_xe = even * sqd_i
-        qcol_xo = odd  * sqd_i
-        qcol_ye = (D2_i + even) * sqd_i
-        qcol_yo = (D2_i + odd ) * sqd_i
+        qcol_xe = even * sqd
+        qcol_xo = odd  * sqd
+        qcol_ye = (D2_i + even) * sqd
+        qcol_yo = (D2_i + odd ) * sqd
 
         Qxe = tl.load(base_Q + row_off_q + qcol_xe[None, :],mask=q_valid[:, None],other=0.0).to(DTYPE)
         Qxo = tl.load(base_Q + row_off_q + qcol_xo[None, :],mask=q_valid[:, None],other=0.0).to(DTYPE)
@@ -526,15 +491,15 @@ def _attn_bwd_dk_dv_rope(
         lin_q_col   = lin_q[:, None]      # [BQ,1]
         pair_ix_row = pair_ix[None, :]    # [1,P]
 
-        cx_row = lin_q_col * cosx_s_i
-        sx_row = lin_q_col * sinx_s_i
-        cy_row = lin_q_col * cosy_s_i
-        sy_row = lin_q_col * siny_s_i
+        cx_row = lin_q_col * cosx_s
+        sx_row = lin_q_col * sinx_s
+        cy_row = lin_q_col * cosy_s
+        sy_row = lin_q_col * siny_s
 
-        cx_col = pair_ix_row * cosx_p_i
-        sx_col = pair_ix_row * sinx_p_i
-        cy_col = pair_ix_row * cosy_p_i
-        sy_col = pair_ix_row * siny_p_i
+        cx_col = pair_ix_row * cosx_p
+        sx_col = pair_ix_row * sinx_p
+        cy_col = pair_ix_row * cosy_p
+        sy_col = pair_ix_row * siny_p
 
         CX_q = tl.load(COSX + cx_row + cx_col,mask=q_valid[:, None],other=0.0).to(DTYPE)
         SX_q = tl.load(SINX + sx_row + sx_col,mask=q_valid[:, None],other=0.0).to(DTYPE)
@@ -599,23 +564,19 @@ def _attn_bwd_dk_dv_rope(
     # For each key j, we apply R_j^T to its 2D pair (even, odd) components:
     # [d_e, d_o] = R^T * [dê, dô]
     dKx_e = tl.where(
-        is_cls_k_bc,
-        dKx_e_hat_acc,
+        is_cls_k_bc, dKx_e_hat_acc,
         dKx_e_hat_acc * CXk_T + dKx_o_hat_acc * SXk_T,
     )
     dKx_o = tl.where(
-        is_cls_k_bc,
-        dKx_o_hat_acc,
+        is_cls_k_bc, dKx_o_hat_acc,
         -dKx_e_hat_acc * SXk_T + dKx_o_hat_acc * CXk_T,
     )
     dKy_e = tl.where(
-        is_cls_k_bc,
-        dKy_e_hat_acc,
+        is_cls_k_bc, dKy_e_hat_acc,
         dKy_e_hat_acc * CYk_T + dKy_o_hat_acc * SYk_T,
     )
     dKy_o = tl.where(
-        is_cls_k_bc,
-        dKy_o_hat_acc,
+        is_cls_k_bc, dKy_o_hat_acc,
         -dKy_e_hat_acc * SYk_T + dKy_o_hat_acc * CYk_T,
     )
 
@@ -623,25 +584,25 @@ def _attn_bwd_dk_dv_rope(
     # 9) scatter pairs into dK[:,D]
     # -------------------------
     base_dK = dK + off_bh_dk
-    k_idx64_b = k_idx64[:, None] * s_dks_i  # [BKV,1]
+    k_idx64_b = k_idx64[:, None] * s_dks  # [BKV,1]
 
     # x-even
-    col_even = even[None, :] * s_dkd_i
+    col_even = even[None, :] * s_dkd
     ptrs = base_dK + k_idx64_b + col_even
     tl.store(ptrs, dKx_e.to(dK.type.element_ty), mask=kv_valid[:, None])
 
     # x-odd
-    col_odd = odd[None, :] * s_dkd_i
+    col_odd = odd[None, :] * s_dkd
     ptrs = base_dK + k_idx64_b + col_odd
     tl.store(ptrs, dKx_o.to(dK.type.element_ty), mask=kv_valid[:, None])
 
     # y-even (offset by D2)
-    col_even_y = (D2_i + even)[None, :] * s_dkd_i
+    col_even_y = (D2_i + even)[None, :] * s_dkd
     ptrs = base_dK + k_idx64_b + col_even_y
     tl.store(ptrs, dKy_e.to(dK.type.element_ty), mask=kv_valid[:, None])
 
     # y-odd (offset by D2)
-    col_odd_y = (D2_i + odd)[None, :] * s_dkd_i
+    col_odd_y = (D2_i + odd)[None, :] * s_dkd
     ptrs = base_dK + k_idx64_b + col_odd_y
     tl.store(ptrs, dKy_o.to(dK.type.element_ty), mask=kv_valid[:, None])
 
@@ -737,35 +698,16 @@ def _attn_bwd_dq_rope(
     # -------------------------
     # 1) base offsets & scalars
     # -------------------------
-    off_bh_q  = (b * sqb   + h * sqh  ).to(tl.int32)
-    off_bh_k  = (b * skb   + h * skh  ).to(tl.int32)
-    off_bh_v  = (b * svb   + h * svh  ).to(tl.int32)
-    off_bh_dO = (b * dob   + h * doh  ).to(tl.int32)
-    off_bh_dQ = (b * s_dqb + h * s_dqh).to(tl.int32)
+    off_bh_q  = (b * sqb   + h * sqh  )
+    off_bh_k  = (b * skb   + h * skh  )
+    off_bh_v  = (b * svb   + h * svh  )
+    off_bh_dO = (b * dob   + h * doh  )
+    off_bh_dQ = (b * s_dqb + h * s_dqh)
 
     # treat M, D as [B*H, S] slices
     off_bh_seq = (pid_bh * SEQ_LEN).to(tl.int32)
     M = M + off_bh_seq
     D = D + off_bh_seq
-
-    # scalar strides
-    sqs_i   = tl.full((1,), sqs,   tl.int32)
-    sqd_i   = tl.full((1,), sqd,   tl.int32)
-    sks_i   = tl.full((1,), sks,   tl.int32)
-    skd_i   = tl.full((1,), skd,   tl.int32)
-    svs_i   = tl.full((1,), svs,   tl.int32)
-    svd_i   = tl.full((1,), svd,   tl.int32)
-    s_dqs_i = tl.full((1,), s_dqs, tl.int32)
-    s_dqd_i = tl.full((1,), s_dqd, tl.int32)
-
-    cosx_s_i = tl.full((1,), cosx_s, tl.int32)
-    cosx_p_i = tl.full((1,), cosx_p, tl.int32)
-    sinx_s_i = tl.full((1,), sinx_s, tl.int32)
-    sinx_p_i = tl.full((1,), sinx_p, tl.int32)
-    cosy_s_i = tl.full((1,), cosy_s, tl.int32)
-    cosy_p_i = tl.full((1,), cosy_p, tl.int32)
-    siny_s_i = tl.full((1,), siny_s, tl.int32)
-    siny_p_i = tl.full((1,), siny_p, tl.int32)
 
     # -------------------------
     # 2) Q rows, masks, pair indices
@@ -794,12 +736,12 @@ def _attn_bwd_dq_rope(
     # 4) gather Q pairs & apply RoPE (same as fwd)
     # -------------------------
     base_Q    = Q + off_bh_q
-    row_off_q = rows64[:, None] * sqs_i
+    row_off_q = rows64[:, None] * sqs
 
-    qcol_xe = even * sqd_i
-    qcol_xo = odd  * sqd_i
-    qcol_ye = (D2_i + even) * sqd_i
-    qcol_yo = (D2_i + odd ) * sqd_i
+    qcol_xe = even * sqd
+    qcol_xo = odd  * sqd
+    qcol_ye = (D2 + even) * sqd
+    qcol_yo = (D2 + odd ) * sqd
 
     Qxe = tl.load(base_Q + row_off_q + qcol_xe[None, :],mask=q_valid[:, None],other=0.0).to(DTYPE)  # [BQ, P_pairs]
     Qxo = tl.load(base_Q + row_off_q + qcol_xo[None, :],mask=q_valid[:, None],other=0.0).to(DTYPE)
@@ -811,15 +753,15 @@ def _attn_bwd_dq_rope(
     lin_q    = tl.maximum(lin_q, 0).to(tl.int32)
     is_cls_q = (HAS_CLS != 0) & (rows == 0)
 
-    cx_row_q = lin_q[:, None] * cosx_s_i
-    sx_row_q = lin_q[:, None] * sinx_s_i
-    cy_row_q = lin_q[:, None] * cosy_s_i
-    sy_row_q = lin_q[:, None] * siny_s_i
+    cx_row_q = lin_q[:, None] * cosx_s
+    sx_row_q = lin_q[:, None] * sinx_s
+    cy_row_q = lin_q[:, None] * cosy_s
+    sy_row_q = lin_q[:, None] * siny_s
 
-    cx_col_q = pair_ix[None, :] * cosx_p_i
-    sx_col_q = pair_ix[None, :] * sinx_p_i
-    cy_col_q = pair_ix[None, :] * cosy_p_i
-    sy_col_q = pair_ix[None, :] * siny_p_i
+    cx_col_q = pair_ix[None, :] * cosx_p
+    sx_col_q = pair_ix[None, :] * sinx_p
+    cy_col_q = pair_ix[None, :] * cosy_p
+    sy_col_q = pair_ix[None, :] * siny_p
 
     CX_q = tl.load(COSX + cx_row_q + cx_col_q,mask=q_valid[:, None],other=0.0).to(DTYPE)
     SX_q = tl.load(SINX + sx_row_q + sx_col_q,mask=q_valid[:, None],other=0.0).to(DTYPE)
@@ -860,12 +802,12 @@ def _attn_bwd_dq_rope(
 
         # K pairs [P_pairs, BKV]
         base_K   = K + off_bh_k
-        kv_colsK = k_idx64[None, :] * sks_i
+        kv_colsK = k_idx64[None, :] * sks
 
-        krow_xe = even * skd_i
-        krow_xo = odd  * skd_i
-        krow_ye = (D2_i + even) * skd_i
-        krow_yo = (D2_i + odd ) * skd_i
+        krow_xe = even * skd
+        krow_xo = odd  * skd
+        krow_ye = (D2 + even) * skd
+        krow_yo = (D2 + odd ) * skd
 
         Kxe = tl.load(base_K + krow_xe[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0).to(DTYPE)
         Kxo = tl.load(base_K + krow_xo[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0).to(DTYPE)
@@ -877,10 +819,10 @@ def _attn_bwd_dq_rope(
         lin_k    = tl.maximum(lin_k, 0).to(tl.int32)
         is_cls_k = (HAS_CLS != 0) & (k_idx == 0)
 
-        cxk = pair_ix[:, None] * cosx_p_i + lin_k[None, :] * cosx_s_i
-        sxk = pair_ix[:, None] * sinx_p_i + lin_k[None, :] * sinx_s_i
-        cyk = pair_ix[:, None] * cosy_p_i + lin_k[None, :] * cosy_s_i
-        syk = pair_ix[:, None] * siny_p_i + lin_k[None, :] * siny_s_i
+        cxk = pair_ix[:, None] * cosx_p + lin_k[None, :] * cosx_s
+        sxk = pair_ix[:, None] * sinx_p + lin_k[None, :] * sinx_s
+        cyk = pair_ix[:, None] * cosy_p + lin_k[None, :] * cosy_s
+        syk = pair_ix[:, None] * siny_p + lin_k[None, :] * siny_s
 
         CX_k = tl.load(COSX + cxk,mask=kv_valid[None, :],other=0.0).to(DTYPE)
         SX_k = tl.load(SINX + sxk,mask=kv_valid[None, :],other=0.0).to(DTYPE)
@@ -888,7 +830,6 @@ def _attn_bwd_dq_rope(
         SY_k = tl.load(SINY + syk,mask=kv_valid[None, :],other=0.0).to(DTYPE)
 
         is_cls_k_bc = is_cls_k[None, :]
-
         Kx_e_r = tl.where(is_cls_k_bc, Kxe, Kxe * CX_k - Kxo * SX_k)
         Kx_o_r = tl.where(is_cls_k_bc, Kxo, Kxe * SX_k + Kxo * CX_k)
         Ky_e_r = tl.where(is_cls_k_bc, Kye, Kye * CY_k - Kyo * SY_k)
@@ -962,25 +903,25 @@ def _attn_bwd_dq_rope(
     # 9) scatter (x/y, even/odd) pairs into dQ[:, D]
     # -------------------------
     base_dQ = dQ + off_bh_dQ
-    row_ix  = rows64[:, None] * s_dqs_i  # [BQ,1]
+    row_ix  = rows64[:, None] * s_dqs  # [BQ,1]
 
     # x-even
-    col_ix = even[None, :] * s_dqd_i
+    col_ix = even[None, :] * s_dqd
     ptrs   = base_dQ + row_ix + col_ix
     tl.store(ptrs,dQx_e.to(dQ.type.element_ty),mask=q_valid[:, None])
 
     # x-odd
-    col_ix = odd[None, :] * s_dqd_i
+    col_ix = odd[None, :] * s_dqd
     ptrs   = base_dQ + row_ix + col_ix
     tl.store(ptrs,dQx_o.to(dQ.type.element_ty),mask=q_valid[:, None])
 
     # y-even (offset by D2)
-    col_ix = (D2_i + even)[None, :] * s_dqd_i
+    col_ix = (D2_i + even)[None, :] * s_dqd
     ptrs   = base_dQ + row_ix + col_ix
     tl.store(ptrs,dQy_e.to(dQ.type.element_ty),mask=q_valid[:, None])
 
     # y-odd (offset by D2)
-    col_ix = (D2_i + odd)[None, :] * s_dqd_i
+    col_ix = (D2_i + odd)[None, :] * s_dqd
     ptrs   = base_dQ + row_ix + col_ix
     tl.store(ptrs,dQy_o.to(dQ.type.element_ty),mask=q_valid[:, None])
 
@@ -996,11 +937,6 @@ class TritonAttention(torch.autograd.Function):
         else:
             assert SEQ_LEN == N_img, f"SEQ_LEN must equal H_img*W_img when has_cls=False (got {SEQ_LEN} vs {N_img})."
 
-        #print("[TRITON WRAPPER] Q/K/V")
-        #print("  Q.shape:", Q.shape, "Q.stride:", Q.stride())
-        #print("  K.shape:", K.shape, "K.stride:", K.stride())
-        #print("  V.shape:", V.shape, "V.stride:", V.stride())
-    
         comp_triton = _sdpa_comp_dtype(Q)
         softmax_scale = 1.0 / (HEAD_DIM ** 0.5)
 
@@ -1051,8 +987,6 @@ class TritonAttention(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dO):
-        #print("[TRITON WRAPPER] Q/K/V")
-        #print("  dO.shape:", dO.shape, "dO.stride:", dO.stride())
         Q, K, V, O, M, COSX, SINX, COSY, SINY = ctx.saved_tensors
         BATCH_SIZE, NUM_HEADS, SEQ_LEN, HEAD_DIM = Q.size()
         
@@ -1136,6 +1070,7 @@ class CosSinTable(torch.nn.Module):
     def __init__(self, base, H_img=14, D=64, device="cuda"):
         super().__init__()
         COSX, SINX, COSY, SINY = self._rope_pairs_tables(base, H_img, D, device)
+
         self.register_buffer("COSX", COSX)
         self.register_buffer("SINX", SINX)
         self.register_buffer("COSY", COSY)
@@ -1156,12 +1091,4 @@ class CosSinTable(torch.nn.Module):
     
     
 def sdpa_triton_fa_rope(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, cos_sin: CosSinTable):
-    """
-    Triton Scaled Dot-Product Attention (SDPA) with 2D Axial RoPE.
-
-    Q, K, V: [B, H, S, D] (contiguous)
-    S must be 1 + H_img*W_img if has_cls=True, else S == H_img*W_img.
-    """
-    #return TritonAttention.apply(Q.contiguous(), K.contiguous(), V.contiguous(), cos_sin)
     return TritonAttention.apply(Q, K, V, cos_sin)
-
