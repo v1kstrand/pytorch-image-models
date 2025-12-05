@@ -460,6 +460,7 @@ def profile_train_step_online(
     warmup_steps=10,
     profiled_steps=5,
     autocast_dtype=torch.bfloat16,
+    **kwargs
 ):
     print("[Profiler] Profiling train step...", batch_size)
     inputs = torch.randn(batch_size, 3, img_size, img_size, requires_grad=True, device=device)
