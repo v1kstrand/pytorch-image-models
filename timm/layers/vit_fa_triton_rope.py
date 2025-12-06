@@ -81,7 +81,7 @@ def _sdpa_comp_dtype(x: torch.Tensor) -> torch.dtype:
             num_warps=num_warps,
         )
         for BLOCK_Q in [64, 128, 256]
-        for BLOCK_KV in [32, 64, 96, 128]
+        for BLOCK_KV in [32, 64, 128]
         for GROUP_M in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -364,7 +364,7 @@ def _attn_bwd_preprocess(
             num_warps=num_warps,
         )
         for BLOCK_Q in [32, 64]
-        for BLOCK_KV in [64, 96, 128]
+        for BLOCK_KV in [64, 128]
         for GROUP_N in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -698,7 +698,7 @@ def _attn_bwd_dk_dv_rope(
             num_warps=num_warps,
         )
         for BLOCK_Q in [64, 128, 256]
-        for BLOCK_KV in [32, 64, 96, 128]
+        for BLOCK_KV in [32, 64, 128]
         for GROUP_M in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
