@@ -1020,13 +1020,6 @@ class TritonAttention(torch.autograd.Function):
         else:
             assert SEQ_LEN == N_img, f"SEQ_LEN must equal H_img*W_img when has_cls=False (got {SEQ_LEN} vs {N_img})."
 
-        if not Q.is_contiguous():
-            Q = Q.contiguous()
-        if not K.is_contiguous():
-            K = K.contiguous()
-        if not V.is_contiguous():
-            V = V.contiguous()
-
         comp_triton = _sdpa_comp_dtype(Q)
         softmax_scale = 1.0 / (HEAD_DIM ** 0.5)
 
