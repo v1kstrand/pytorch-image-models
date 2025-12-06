@@ -218,6 +218,7 @@ class FourierEmbed(nn.Module):
 def rot(x):
     # x:   [ x0  x1  x2  x3  x4  x5]
     # out: [-x1  x0 -x3  x2 -x5  x4]
+    print(x.shape)
     return torch.stack([-x[..., 1::2], x[..., ::2]], -1).reshape(x.shape)
 
 
