@@ -447,9 +447,6 @@ from torch.profiler import (
     schedule,
 )
 
-
-
-
 def profile_train_step_online(
     model: torch.nn.Module,
     num_classes = 1000,

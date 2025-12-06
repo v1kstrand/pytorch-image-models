@@ -412,16 +412,8 @@ def _attn_bwd_dk_dv_rope(
     krow_e = even * skd                        # [D2]
     krow_o = odd  * skd                        # [D2]
 
-    Ke = tl.load(
-        base_K + krow_e[:, None] + k_idx64b * sks,
-        mask=kv_valid[None, :],
-        other=0.0,
-    ).to(DTYPE)  # [D2, BKV]
-    Ko = tl.load(
-        base_K + krow_o[:, None] + k_idx64b * sks,
-        mask=kv_valid[None, :],
-        other=0.0,
-    ).to(DTYPE)  # [D2, BKV]
+    Ke = tl.load(base_K + krow_e[:, None] + k_idx64b * sks, mask=kv_valid[None, :], other=0.0).to(DTYPE)  # [D2, BKV]
+    Ko = tl.load(base_K + krow_o[:, None] + k_idx64b * sks,mask=kv_valid[None, :],other=0.0).to(DTYPE)  # [D2, BKV]
 
     # RoPE positions for keys
     lin_k = k_idx - HAS_CLS
@@ -476,11 +468,7 @@ def _attn_bwd_dk_dv_rope(
 
         # ---- dO tile [BQ, D] ----
         dO_ptrs = base_dO + rows64[:, None] * sos + d_idx * sod
-        dO_block = tl.load(
-            dO_ptrs,
-            mask=q_valid[:, None],
-            other=0.0,
-        ).to(DTYPE)  # [BQ, D]
+        dO_block = tl.load(dO_ptrs,mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ, D]
 
         # ---- Q pairs [BQ, D2] ----
         row_off_q = rows64[:, None] * sqs
@@ -488,16 +476,8 @@ def _attn_bwd_dk_dv_rope(
         qcol_e = even * sqd
         qcol_o = odd  * sqd
 
-        Qe = tl.load(
-            base_Q + row_off_q + qcol_e[None, :],
-            mask=q_valid[:, None],
-            other=0.0,
-        ).to(DTYPE)  # [BQ,D2]
-        Qo = tl.load(
-            base_Q + row_off_q + qcol_o[None, :],
-            mask=q_valid[:, None],
-            other=0.0,
-        ).to(DTYPE)  # [BQ,D2]
+        Qe = tl.load(base_Q + row_off_q + qcol_e[None, :],mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
+        Qo = tl.load(base_Q + row_off_q + qcol_o[None, :],mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
 
         # ---- Q-side RoPE → Q̂ [BQ,D2] ----
         lin_q = rows_q - HAS_CLS
@@ -513,16 +493,8 @@ def _attn_bwd_dk_dv_rope(
         s_row = lin_q_col * sinp_s
         s_col = pair_ix_row * sinp_p
 
-        COS_q = tl.load(
-            COSP + c_row + c_col,
-            mask=q_valid[:, None],
-            other=0.0,
-        ).to(DTYPE)  # [BQ,D2]
-        SIN_q = tl.load(
-            SINP + s_row + s_col,
-            mask=q_valid[:, None],
-            other=0.0,
-        ).to(DTYPE)
+        COS_q = tl.load(COSP + c_row + c_col,mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
+        SIN_q = tl.load(SINP + s_row + s_col,mask=q_valid[:, None],other=0.0,).to(DTYPE)
 
         Qe_r = tl.where(is_cls_q_bc, Qe, Qe * COS_q - Qo * SIN_q)
         Qo_r = tl.where(is_cls_q_bc, Qo, Qo * COS_q + Qe * SIN_q)
@@ -711,11 +683,7 @@ def _attn_bwd_dq_rope(
     # 3) load dO tile [BQ, D] and rowwise D, M
     # -------------------------
     dO_ptrs  = (dO + off_bh_dO) + rows64[:, None] * dos + d_idx * dod
-    dO_block = tl.load(
-        dO_ptrs,
-        mask=q_valid[:, None],
-        other=0.0,
-    ).to(DTYPE)  # [BQ, D]
+    dO_block = tl.load(dO_ptrs,mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ, D]
 
     Di = tl.load(D + rows64, mask=q_valid, other=0.0).to(tl.float32)           # [BQ]
     Mi = tl.load(M + rows64, mask=q_valid, other=-float("inf")).to(tl.float32) # [BQ]
@@ -729,16 +697,8 @@ def _attn_bwd_dq_rope(
     qcol_e = even * sqd
     qcol_o = odd  * sqd
 
-    Qe = tl.load(
-        base_Q + row_off_q + qcol_e[None, :],
-        mask=q_valid[:, None],
-        other=0.0,
-    ).to(DTYPE)  # [BQ, D2]
-    Qo = tl.load(
-        base_Q + row_off_q + qcol_o[None, :],
-        mask=q_valid[:, None],
-        other=0.0,
-    ).to(DTYPE)  # [BQ, D2]
+    Qe = tl.load(base_Q + row_off_q + qcol_e[None, :],mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ, D2]
+    Qo = tl.load(base_Q + row_off_q + qcol_o[None, :],mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ, D2]
 
     # Q-side RoPE
     lin_q    = rows - HAS_CLS
@@ -753,16 +713,8 @@ def _attn_bwd_dq_rope(
     s_row_q = lin_q_col * tl.full((1,), sinp_s, tl.int32)
     s_col_q = pair_ix_row * tl.full((1,), sinp_p, tl.int32)
 
-    COS_q = tl.load(
-        COSP + c_row_q + c_col_q,
-        mask=q_valid[:, None],
-        other=0.0,
-    ).to(DTYPE)  # [BQ,D2]
-    SIN_q = tl.load(
-        SINP + s_row_q + s_col_q,
-        mask=q_valid[:, None],
-        other=0.0,
-    ).to(DTYPE)  # [BQ,D2]
+    COS_q = tl.load(COSP + c_row_q + c_col_q,mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
+    SIN_q = tl.load(SINP + s_row_q + s_col_q,mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
 
     is_cls_q_bc = is_cls_q[:, None]
 
@@ -795,11 +747,7 @@ def _attn_bwd_dq_rope(
 
         # V tile [BKV, D] (for dP)
         V_ptrs = base_V + k_idx64[:, None] * svs + d_idx * svd
-        V_blk  = tl.load(
-            V_ptrs,
-            mask=kv_valid[:, None],
-            other=0.0,
-        ).to(DTYPE)  # [BKV, D]
+        V_blk  = tl.load(V_ptrs,mask=kv_valid[:, None],other=0.0,).to(DTYPE)  # [BKV, D]
 
         # K pairs [D2, BKV]
         kv_colsK = k_idx64[None, :] * sks
@@ -807,16 +755,8 @@ def _attn_bwd_dq_rope(
         krow_e = even * skd
         krow_o = odd  * skd
 
-        Ke = tl.load(
-            base_K + krow_e[:, None] + kv_colsK,
-            mask=kv_valid[None, :],
-            other=0.0,
-        ).to(DTYPE)  # [D2,BKV]
-        Ko = tl.load(
-            base_K + krow_o[:, None] + kv_colsK,
-            mask=kv_valid[None, :],
-            other=0.0,
-        ).to(DTYPE)  # [D2,BKV]
+        Ke = tl.load(base_K + krow_e[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0,).to(DTYPE)  # [D2,BKV]
+        Ko = tl.load(base_K + krow_o[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0,).to(DTYPE)  # [D2,BKV]
 
         # K-side RoPE
         lin_k    = k_idx - HAS_CLS
@@ -831,16 +771,8 @@ def _attn_bwd_dq_rope(
         sk = pair_ix_col * tl.full((1,), sinp_p, tl.int32) + \
              lin_k_row   * tl.full((1,), sinp_s, tl.int32)
 
-        COS_k = tl.load(
-            COSP + ck,
-            mask=kv_valid[None, :],
-            other=0.0,
-        ).to(DTYPE)  # [D2,BKV]
-        SIN_k = tl.load(
-            SINP + sk,
-            mask=kv_valid[None, :],
-            other=0.0,
-        ).to(DTYPE)  # [D2,BKV]
+        COS_k = tl.load(COSP + ck,mask=kv_valid[None, :],other=0.0,).to(DTYPE)  # [D2,BKV]
+        SIN_k = tl.load(SINP + sk,mask=kv_valid[None, :],other=0.0,).to(DTYPE)  # [D2,BKV]
 
         is_cls_k_bc = is_cls_k[None, :]   # [1,BKV]
 
