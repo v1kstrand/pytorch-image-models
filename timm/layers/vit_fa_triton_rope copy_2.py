@@ -4,7 +4,7 @@ import triton.language as tl
 
 GROUP_NM_SWEEP = [2, 4, 8]
 NUM_STAGES_SWEEP = [1, 2, 3, 4]
-NUM_WARPS_SWEEP = [2, 4, 8]
+NUM_WARPS_SWEEP = [2, 4]
 
 KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]
 def build_axial_rope_pairs(
@@ -80,8 +80,8 @@ def _sdpa_comp_dtype(x: torch.Tensor) -> torch.dtype:
             num_stages=num_stages,
             num_warps=num_warps,
         )
-        for BLOCK_Q in [64, 128, 256]
-        for BLOCK_KV in [32, 64, 96, 128]
+        for BLOCK_Q in [64, 128]
+        for BLOCK_KV in [32, 64]
         for GROUP_M in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -113,8 +113,6 @@ def _attn_fwd(
     DTYPE: tl.constexpr,            # compute dtype (e.g., tl.float32 or tl.float16)
     GROUP_M: tl.constexpr,
 ):
-    softmax_scale_f = softmax_scale
-    neg_large = -1e9
     # ---- swizzled tile ids ----
     pid_m  = tl.program_id(0)
     pid_bh = tl.program_id(1)
@@ -144,8 +142,6 @@ def _attn_fwd(
     q_valid = rows < SEQ_LEN
     cols    = tl.arange(0, BLOCK_KV)                     # [BKV]
     pair_ix = tl.arange(0, D2).to(tl.int32)              # complex pairs
-    pair_cosp = pair_ix * cosp_p
-    pair_sinp = pair_ix * sinp_p
 
     # ---- row offsets ----
     row_off_q = rows_i[:, None] * sqs                    # [BQ,1]
@@ -160,18 +156,8 @@ def _attn_fwd(
     qcol_o = (2 * pair_ix + 1) * sqd                     # [D2]
 
     # Q_even, Q_odd: [BQ, D2]
-    Qe = tl.load(
-        base_Q + row_off_q + qcol_e[None, :],
-        mask=q_valid[:, None],
-        other=0.,
-        cache_modifier=".ca",
-    ).to(DTYPE)
-    Qo = tl.load(
-        base_Q + row_off_q + qcol_o[None, :],
-        mask=q_valid[:, None],
-        other=0.,
-        cache_modifier=".ca",
-    ).to(DTYPE)
+    Qe = tl.load(base_Q + row_off_q + qcol_e[None, :],mask=q_valid[:, None],other=0.).to(DTYPE)
+    Qo = tl.load(base_Q + row_off_q + qcol_o[None, :],mask=q_valid[:, None],other=0.).to(DTYPE)
 
     # ---- Q-side RoPE (pairwise [N_pos, D2]) ----
     lin_q    = rows - HAS_CLS
@@ -179,23 +165,13 @@ def _attn_fwd(
     is_cls_q = (HAS_CLS != 0) & (rows == 0)
 
     # pointer offsets into COSP/SINP: [BQ,D2]
-    c_row = lin_q[:, None]   * cosp_s
-    c_col = pair_cosp[None, :]
-    s_row = lin_q[:, None]   * sinp_s
-    s_col = pair_sinp[None, :]
+    c_row = lin_q[:, None]   * tl.full((1,), cosp_s, tl.int32)
+    c_col = pair_ix[None, :] * tl.full((1,), cosp_p, tl.int32)
+    s_row = lin_q[:, None]   * tl.full((1,), sinp_s, tl.int32)
+    s_col = pair_ix[None, :] * tl.full((1,), sinp_p, tl.int32)
 
-    COS_q = tl.load(
-        COSP + c_row + c_col,
-        mask=q_valid[:, None],
-        other=0.,
-        cache_modifier=".ca",
-    ).to(DTYPE)
-    SIN_q = tl.load(
-        SINP + s_row + s_col,
-        mask=q_valid[:, None],
-        other=0.,
-        cache_modifier=".ca",
-    ).to(DTYPE)
+    COS_q = tl.load(COSP + c_row + c_col,mask=q_valid[:, None],other=0.).to(DTYPE)
+    SIN_q = tl.load(SINP + s_row + s_col,mask=q_valid[:, None],other=0.).to(DTYPE)
 
     # rotate Q pairs; CLS bypass -> identity
     Qe_r = tl.where(is_cls_q[:, None], Qe, Qe * COS_q - Qo * SIN_q)
@@ -204,7 +180,7 @@ def _attn_fwd(
     # ---- online softmax accumulators ----
     m_i   = tl.full((BLOCK_Q,), -float("inf"), dtype=tl.float32)
     l_i   = tl.full((BLOCK_Q,),  0.0,          dtype=tl.float32)
-    O_blk = tl.zeros((BLOCK_Q, HEAD_DIM),      dtype=DTYPE)
+    O_blk = tl.zeros((BLOCK_Q, HEAD_DIM),      dtype=tl.float32)
 
     # =========================
     # KV loop
@@ -212,69 +188,37 @@ def _attn_fwd(
     for start_kv in range(0, SEQ_LEN, BLOCK_KV):
         kv_cols   = start_kv + cols
         kv_valid  = kv_cols < SEQ_LEN
+        kv_cols_k = kv_cols.to(tl.int32)[None, :]   # [1,BKV] for K
+        kv_cols_v = kv_cols.to(tl.int32)[:, None]   # [BKV,1] for V
 
         # ---- K: load even/odd pairs [D2,BKV] ----
         base_K = K + off_bh_k
-        k_even_blk = tl.make_block_ptr(
-            base_K,
-            (D2, SEQ_LEN),
-            (2 * skd, sks),
-            (0, start_kv),
-            (D2, BLOCK_KV),
-            (0, 1),
-        )
-        k_odd_blk = tl.make_block_ptr(
-            base_K + skd,
-            (D2, SEQ_LEN),
-            (2 * skd, sks),
-            (0, start_kv),
-            (D2, BLOCK_KV),
-            (0, 1),
-        )
+        krow_e = (2 * pair_ix)     * skd            # [D2]
+        krow_o = (2 * pair_ix + 1) * skd            # [D2]
 
-        Ke = tl.load(
-            k_even_blk,
-            boundary_check=(0, 1),
-            padding_option="zero",
-            cache_modifier=".ca",
-        ).to(DTYPE)
-        Ko = tl.load(
-            k_odd_blk,
-            boundary_check=(0, 1),
-            padding_option="zero",
-            cache_modifier=".ca",
-        ).to(DTYPE)
+        Ke = tl.load(base_K + krow_e[:, None] + kv_cols_k * sks,mask=kv_valid[None, :],other=0.).to(DTYPE)
+        Ko = tl.load(base_K + krow_o[:, None] + kv_cols_k * sks,mask=kv_valid[None, :],other=0.).to(DTYPE)
 
         # ---- K-side RoPE; CLS col bypass ----
         lin_k    = kv_cols - HAS_CLS
         lin_k    = tl.maximum(lin_k, 0).to(tl.int32)
         is_cls_k = (HAS_CLS != 0) & (kv_cols == 0)
 
-        ck_row = pair_cosp[:, None]
-        ck_col = lin_k[None, :]   * cosp_s
-        sk_row = pair_sinp[:, None]
-        sk_col = lin_k[None, :]   * sinp_s
+        ck_row = pair_ix[:, None] * tl.full((1,), cosp_p, tl.int32)
+        ck_col = lin_k[None, :]   * tl.full((1,), cosp_s, tl.int32)
+        sk_row = pair_ix[:, None] * tl.full((1,), sinp_p, tl.int32)
+        sk_col = lin_k[None, :]   * tl.full((1,), sinp_s, tl.int32)
 
-        COS_k = tl.load(
-            COSP + ck_row + ck_col,
-            mask=kv_valid[None, :],
-            other=0.,
-            cache_modifier=".ca",
-        ).to(DTYPE)
-        SIN_k = tl.load(
-            SINP + sk_row + sk_col,
-            mask=kv_valid[None, :],
-            other=0.,
-            cache_modifier=".ca",
-        ).to(DTYPE)
+        COS_k = tl.load(COSP + ck_row + ck_col,mask=kv_valid[None, :],other=0.).to(DTYPE)
+        SIN_k = tl.load(SINP + sk_row + sk_col,mask=kv_valid[None, :],other=0.).to(DTYPE)
 
         Ke_r = tl.where(is_cls_k[None, :], Ke, Ke * COS_k - Ko * SIN_k)
         Ko_r = tl.where(is_cls_k[None, :], Ko, Ko * COS_k + Ke * SIN_k)
 
         # ---- logits tile: 2× pair-dot ----
-        S_tile = tl.dot(Qe_r, Ke_r, allow_tf32=True) + tl.dot(Qo_r, Ko_r, allow_tf32=True)   # [BQ,BKV]
-        S_tile = S_tile * softmax_scale_f
-        S_tile = tl.where(q_valid[:, None] & kv_valid[None, :], S_tile, neg_large)
+        S_tile = tl.dot(Qe_r, Ke_r) + tl.dot(Qo_r, Ko_r)   # [BQ,BKV]
+        S_tile = S_tile * tl.full((1,), softmax_scale, dtype=tl.float32)
+        S_tile = tl.where(q_valid[:, None] & kv_valid[None, :], S_tile, -float("inf"))
 
         # ---- online softmax ----
         m_ij  = tl.maximum(m_i, tl.max(S_tile, axis=1))
@@ -283,35 +227,23 @@ def _attn_fwd(
         l_ij  = tl.sum(P_blk, axis=1)
 
         # ---- accumulate O ----
-        v_blk = tl.make_block_ptr(
-            V + off_bh_v,
-            (SEQ_LEN, HEAD_DIM),
-            (svs, svd),
-            (start_kv, 0),
-            (BLOCK_KV, HEAD_DIM),
-            (1, 0),
-        )
-        V_blk  = tl.load(
-            v_blk,
-            boundary_check=(0, 1),
-            padding_option="zero",
-            cache_modifier=".ca",
-        ).to(DTYPE)
+        d_idx  = tl.arange(0, HEAD_DIM)[None, :].to(tl.int32)    # [1, D]
+        V_ptrs = (V + off_bh_v) + kv_cols_v * svs + d_idx * svd  # [BKV,D]
+        V_blk  = tl.load(V_ptrs, mask=kv_valid[:, None], other=0.).to(DTYPE)
 
-        O_blk  = O_blk * alpha[:, None].to(DTYPE)
-        O_blk  += tl.dot(P_blk.to(DTYPE), V_blk, allow_tf32=True).to(DTYPE)           # (BQ,BKV) @ (BKV,D) + O_blk
+        O_blk  = O_blk * alpha[:, None]
+        O_blk  = tl.dot(P_blk.to(DTYPE), V_blk, O_blk)           # (BQ,BKV) @ (BKV,D) + O_blk
 
         l_i = tl.where(q_valid, l_i * alpha + l_ij, l_i)
         m_i = tl.where(q_valid, m_ij, m_i)
 
     # ---- write back M and O ----
     m_ptrs = M + (b * NUM_HEADS + h) * SEQ_LEN + rows
-    tl.store(m_ptrs, m_i + tl.log(l_i + 1e-9), mask=q_valid)
+    tl.store(m_ptrs, m_i + tl.log(l_i + 1e-20), mask=q_valid)
 
-    inv_l = (1.0 / l_i).to(DTYPE)
-    O_blk = O_blk * inv_l[:, None]
-    d_idx = tl.arange(0, HEAD_DIM).to(tl.int32)[None, :]
-    O_ptrs = (O + off_bh_o) + row_off_o + d_idx * sod
+    O_blk = O_blk / l_i[:, None]
+    d_idx = tl.arange(0, HEAD_DIM)[None, :].to(tl.int32)
+    O_ptrs = (O + off_bh_o) + row_off_o + d_idx * tl.full((1,), sod, tl.int32)
     tl.store(O_ptrs, O_blk.to(O.type.element_ty), mask=q_valid[:, None])
 
 
@@ -364,7 +296,7 @@ def _attn_bwd_preprocess(
             num_warps=num_warps,
         )
         for BLOCK_Q in [32, 64]
-        for BLOCK_KV in [64, 96, 128]
+        for BLOCK_KV in [64, 128]
         for GROUP_N in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -404,8 +336,6 @@ def _attn_bwd_dk_dv_rope(
     HAS_CLS: tl.constexpr,
 ):
     tl.static_assert((HEAD_DIM % 4) == 0)
-    softmax_scale_f = softmax_scale
-    neg_large = -1e9
 
     # -------------------------
     # 0) program ids / (b,h) plane
@@ -451,8 +381,6 @@ def _attn_bwd_dk_dv_rope(
     off_bh_dv = (b * s_dvb + h * s_dvh)
 
     pair_ix = tl.arange(0, D2).to(tl.int32)    # [D2] = complex pairs
-    pair_cosp = pair_ix * cosp_p
-    pair_sinp = pair_ix * sinp_p
     even    = 2 * pair_ix                      # 0,2,4,...
     odd     = 2 * pair_ix + 1                  # 1,3,5,...
 
@@ -464,81 +392,49 @@ def _attn_bwd_dk_dv_rope(
     kv_valid = k_idx < SEQ_LEN
     k_idx64  = k_idx.to(tl.int32)
 
+    d_idx = tl.arange(0, HEAD_DIM).to(tl.int32)[None, :]  # [1,D]
+
     # V tile [BKV, D]
     base_V = V + off_bh_v
-    v_blk = tl.make_block_ptr(
-        base_V,
-        (SEQ_LEN, HEAD_DIM),
-        (svs, svd),
-        (start_kv, 0),
-        (BLOCK_KV, HEAD_DIM),
-        (1, 0),
-    )
+    V_ptrs = base_V + k_idx64[:, None] * svs + d_idx * svd
     V_block = tl.load(
-        v_blk,
-        boundary_check=(0, 1),
-        padding_option="zero",
-        cache_modifier=".ca",
+        V_ptrs,
+        mask=kv_valid[:, None],
+        other=0.0,
     ).to(DTYPE)  # [BKV, D]
 
     # -------------------------
     # 4) K pairs + K-side RoPE ⇒ K̂ (pairwise)
     # -------------------------
     base_K   = K + off_bh_k
+    k_idx64b = k_idx64[None, :]                # [1,BKV]
 
-    k_even_blk = tl.make_block_ptr(
-        base_K,
-        (D2, SEQ_LEN),
-        (2 * skd, sks),
-        (0, start_kv),
-        (D2, BLOCK_KV),
-        (0, 1),
-    )
-    k_odd_blk = tl.make_block_ptr(
-        base_K + skd,
-        (D2, SEQ_LEN),
-        (2 * skd, sks),
-        (0, start_kv),
-        (D2, BLOCK_KV),
-        (0, 1),
-    )
+    krow_e = even * skd                        # [D2]
+    krow_o = odd  * skd                        # [D2]
 
-    Ke = tl.load(
-        k_even_blk,
-        boundary_check=(0, 1),
-        padding_option="zero",
-        cache_modifier=".ca",
-    ).to(DTYPE)  # [D2, BKV]
-    Ko = tl.load(
-        k_odd_blk,
-        boundary_check=(0, 1),
-        padding_option="zero",
-        cache_modifier=".ca",
-    ).to(DTYPE)  # [D2, BKV]
+    Ke = tl.load(base_K + krow_e[:, None] + k_idx64b * sks, mask=kv_valid[None, :], other=0.0).to(DTYPE)  # [D2, BKV]
+    Ko = tl.load(base_K + krow_o[:, None] + k_idx64b * sks,mask=kv_valid[None, :],other=0.0).to(DTYPE)  # [D2, BKV]
 
     # RoPE positions for keys
     lin_k = k_idx - HAS_CLS
     lin_k = tl.maximum(lin_k, 0).to(tl.int32)
     is_cls_k = (HAS_CLS != 0) & (k_idx == 0)
 
-    pair_cosp_col = pair_cosp[:, None]
-    pair_sinp_col = pair_sinp[:, None]
+    pair_ix_col = pair_ix[:, None]    # [D2,1]
     lin_k_row   = lin_k[None, :]      # [1,BKV]
 
-    ck = pair_cosp_col + lin_k_row * cosp_s
-    sk = pair_sinp_col + lin_k_row * sinp_s
+    ck = pair_ix_col * cosp_p + lin_k_row * cosp_s
+    sk = pair_ix_col * sinp_p + lin_k_row * sinp_s
 
     COS_k = tl.load(
         COSP + ck,
         mask=kv_valid[None, :],
         other=0.0,
-        cache_modifier=".ca",
     ).to(DTYPE)  # [D2, BKV]
     SIN_k = tl.load(
         SINP + sk,
         mask=kv_valid[None, :],
         other=0.0,
-        cache_modifier=".ca",
     ).to(DTYPE)  # [D2, BKV]
 
     is_cls_k_bc = is_cls_k[None, :]   # [1,BKV]
@@ -553,13 +449,14 @@ def _attn_bwd_dk_dv_rope(
     dKe_hat_acc = tl.zeros((BLOCK_KV, D2),        dtype=tl.float32)
     dKo_hat_acc = tl.zeros((BLOCK_KV, D2),        dtype=tl.float32)
 
+    s_fp32 = tl.full((1,), softmax_scale, dtype=tl.float32)
+
     # -------------------------
     # 6) loop over Q tiles
     # -------------------------
     num_q_tiles = tl.cdiv(SEQ_LEN, BLOCK_Q)
     base_Q  = Q  + off_bh_q
     base_dO = dO + off_bh_do
-    d_idx = tl.arange(0, HEAD_DIM).to(tl.int32)[None, :]  # [1, D]
 
     for qi in range(0, num_q_tiles):
         start_q = qi * BLOCK_Q
@@ -589,30 +486,22 @@ def _attn_bwd_dk_dv_rope(
         is_cls_q_bc = is_cls_q[:, None]
 
         lin_q_col   = lin_q[:, None]      # [BQ,1]
-        c_row = lin_q_col * cosp_s
-        c_col = pair_cosp[None, :]
-        s_row = lin_q_col * sinp_s
-        s_col = pair_sinp[None, :]
+        pair_ix_row = pair_ix[None, :]    # [1,D2]
 
-        COS_q = tl.load(
-            COSP + c_row + c_col,
-            mask=q_valid[:, None],
-            other=0.0,
-            cache_modifier=".ca",
-        ).to(DTYPE)  # [BQ,D2]
-        SIN_q = tl.load(
-            SINP + s_row + s_col,
-            mask=q_valid[:, None],
-            other=0.0,
-            cache_modifier=".ca",
-        ).to(DTYPE)
+        c_row = lin_q_col * cosp_s
+        c_col = pair_ix_row * cosp_p
+        s_row = lin_q_col * sinp_s
+        s_col = pair_ix_row * sinp_p
+
+        COS_q = tl.load(COSP + c_row + c_col,mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
+        SIN_q = tl.load(SINP + s_row + s_col,mask=q_valid[:, None],other=0.0,).to(DTYPE)
 
         Qe_r = tl.where(is_cls_q_bc, Qe, Qe * COS_q - Qo * SIN_q)
         Qo_r = tl.where(is_cls_q_bc, Qo, Qo * COS_q + Qe * SIN_q)
 
         # ---- logits S (with RoPE) [BQ, BKV] ----
-        S_blk = tl.dot(Qe_r, Ke_r, allow_tf32=True) + tl.dot(Qo_r, Ko_r, allow_tf32=True)    # [BQ,BKV]
-        S_blk = tl.where(mask_qk, S_blk * softmax_scale_f, neg_large)
+        S_blk = tl.dot(Qe_r, Ke_r) + tl.dot(Qo_r, Ko_r)    # [BQ,BKV]
+        S_blk = tl.where(mask_qk, S_blk * s_fp32, -float("inf"))
 
         # ---- reconstruct P from M (logsumexp) ----
         m_i = tl.load(M + rows64, mask=q_valid, other=0.0).to(tl.float32)  # [BQ]
@@ -620,25 +509,25 @@ def _attn_bwd_dk_dv_rope(
         P_blk = tl.exp(S_blk - m_i[:, None])  # [BQ, BKV]
 
         # ---- dV = Σ_i P_ij dO_i  => dV_acc [BKV,D] ----
-        dV_acc += tl.dot(
+        dV_acc = tl.dot(
             tl.trans(P_blk).to(DTYPE),   # [BKV,BQ]
             dO_block.to(DTYPE),          # [BQ,D]
-            allow_tf32=True,
+            dV_acc                        # [BKV,D]
         )
 
         # ---- dS via FlashAttn formula ----
-        dp_blk = tl.dot(dO_block, tl.trans(V_block), allow_tf32=True).to(tl.float32)  # [BQ,BKV]
+        dp_blk = tl.dot(dO_block, tl.trans(V_block)).to(tl.float32)  # [BQ,BKV]
         dS_blk = (P_blk * (dp_blk - Di[:, None])).to(DTYPE)          # [BQ,BKV]
 
         # ---- dK̂ pairs: dK̂_j = Σ_i dS_ij Q̂_i ----
-        dKe_hat_acc += tl.dot(tl.trans(dS_blk), Qe_r, allow_tf32=True)    # [BKV,D2]
-        dKo_hat_acc += tl.dot(tl.trans(dS_blk), Qo_r, allow_tf32=True)
+        dKe_hat_acc = tl.dot(tl.trans(dS_blk), Qe_r, dKe_hat_acc)    # [BKV,D2]
+        dKo_hat_acc = tl.dot(tl.trans(dS_blk), Qo_r, dKo_hat_acc)
 
     # -------------------------
     # 7) apply softmax_scale to dK̂
     # -------------------------
-    dKe_hat_acc *= softmax_scale_f
-    dKo_hat_acc *= softmax_scale_f
+    dKe_hat_acc *= s_fp32
+    dKo_hat_acc *= s_fp32
 
     # -------------------------
     # 8) un-rotate K̂-grads → base dK pairs
@@ -697,8 +586,8 @@ def _attn_bwd_dk_dv_rope(
             num_stages=num_stages,
             num_warps=num_warps,
         )
-        for BLOCK_Q in [64, 128, 256]
-        for BLOCK_KV in [32, 64, 96, 128]
+        for BLOCK_Q in [64, 128]
+        for BLOCK_KV in [32, 64]
         for GROUP_M in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -736,8 +625,6 @@ def _attn_bwd_dq_rope(
     HAS_CLS: tl.constexpr,
 ):
     tl.static_assert((HEAD_DIM % 4) == 0)
-    softmax_scale_f = softmax_scale
-    neg_large = -1e9
 
     # -------------------------
     # 0) program ids
@@ -787,8 +674,6 @@ def _attn_bwd_dq_rope(
     q_valid = rows < SEQ_LEN
 
     pair_ix = tl.arange(0, D2).to(tl.int32)      # [D2] complex pairs
-    pair_cosp = pair_ix * cosp_p
-    pair_sinp = pair_ix * sinp_p
     even    = 2 * pair_ix                        # 0,2,4,...
     odd     = 2 * pair_ix + 1                    # 1,3,5,...
 
@@ -801,7 +686,7 @@ def _attn_bwd_dq_rope(
     dO_block = tl.load(dO_ptrs,mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ, D]
 
     Di = tl.load(D + rows64, mask=q_valid, other=0.0).to(tl.float32)           # [BQ]
-    Mi = tl.load(M + rows64, mask=q_valid, other=neg_large).to(tl.float32) # [BQ]
+    Mi = tl.load(M + rows64, mask=q_valid, other=-float("inf")).to(tl.float32) # [BQ]
 
     # -------------------------
     # 4) gather Q pairs & apply RoPE (pairwise, same as fwd)
@@ -821,23 +706,15 @@ def _attn_bwd_dq_rope(
     is_cls_q = (HAS_CLS != 0) & (rows == 0)
 
     lin_q_col   = lin_q[:, None]          # [BQ,1]
-    c_row_q = lin_q_col * cosp_s
-    c_col_q = pair_cosp[None, :]
-    s_row_q = lin_q_col * sinp_s
-    s_col_q = pair_sinp[None, :]
+    pair_ix_row = pair_ix[None, :]        # [1,D2]
 
-    COS_q = tl.load(
-        COSP + c_row_q + c_col_q,
-        mask=q_valid[:, None],
-        other=0.0,
-        cache_modifier=".ca",
-    ).to(DTYPE)  # [BQ,D2]
-    SIN_q = tl.load(
-        SINP + s_row_q + s_col_q,
-        mask=q_valid[:, None],
-        other=0.0,
-        cache_modifier=".ca",
-    ).to(DTYPE)  # [BQ,D2]
+    c_row_q = lin_q_col * tl.full((1,), cosp_s, tl.int32)
+    c_col_q = pair_ix_row * tl.full((1,), cosp_p, tl.int32)
+    s_row_q = lin_q_col * tl.full((1,), sinp_s, tl.int32)
+    s_col_q = pair_ix_row * tl.full((1,), sinp_p, tl.int32)
+
+    COS_q = tl.load(COSP + c_row_q + c_col_q,mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
+    SIN_q = tl.load(SINP + s_row_q + s_col_q,mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
 
     is_cls_q_bc = is_cls_q[:, None]
 
@@ -869,76 +746,33 @@ def _attn_bwd_dq_rope(
         mask_qk = q_valid[:, None] & kv_valid[None, :]
 
         # V tile [BKV, D] (for dP)
-        v_blk = tl.make_block_ptr(
-            base_V,
-            (SEQ_LEN, HEAD_DIM),
-            (svs, svd),
-            (start_kv, 0),
-            (BLOCK_KV, HEAD_DIM),
-            (1, 0),
-        )
-        V_blk  = tl.load(
-            v_blk,
-            boundary_check=(0, 1),
-            padding_option="zero",
-            cache_modifier=".ca",
-        ).to(DTYPE)  # [BKV, D]
+        V_ptrs = base_V + k_idx64[:, None] * svs + d_idx * svd
+        V_blk  = tl.load(V_ptrs,mask=kv_valid[:, None],other=0.0,).to(DTYPE)  # [BKV, D]
 
         # K pairs [D2, BKV]
-        k_even_blk = tl.make_block_ptr(
-            base_K,
-            (D2, SEQ_LEN),
-            (2 * skd, sks),
-            (0, start_kv),
-            (D2, BLOCK_KV),
-            (0, 1),
-        )
-        k_odd_blk = tl.make_block_ptr(
-            base_K + skd,
-            (D2, SEQ_LEN),
-            (2 * skd, sks),
-            (0, start_kv),
-            (D2, BLOCK_KV),
-            (0, 1),
-        )
+        kv_colsK = k_idx64[None, :] * sks
 
-        Ke = tl.load(
-            k_even_blk,
-            boundary_check=(0, 1),
-            padding_option="zero",
-            cache_modifier=".ca",
-        ).to(DTYPE)  # [D2,BKV]
-        Ko = tl.load(
-            k_odd_blk,
-            boundary_check=(0, 1),
-            padding_option="zero",
-            cache_modifier=".ca",
-        ).to(DTYPE)  # [D2,BKV]
+        krow_e = even * skd
+        krow_o = odd  * skd
+
+        Ke = tl.load(base_K + krow_e[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0,).to(DTYPE)  # [D2,BKV]
+        Ko = tl.load(base_K + krow_o[:, None] + kv_colsK,mask=kv_valid[None, :],other=0.0,).to(DTYPE)  # [D2,BKV]
 
         # K-side RoPE
         lin_k    = k_idx - HAS_CLS
         lin_k    = tl.maximum(lin_k, 0).to(tl.int32)
         is_cls_k = (HAS_CLS != 0) & (k_idx == 0)
 
-        pair_cosp_col = pair_cosp[:, None]
-        pair_sinp_col = pair_sinp[:, None]
+        pair_ix_col = pair_ix[:, None]    # [D2,1]
         lin_k_row   = lin_k[None, :]      # [1,BKV]
 
-        ck = pair_cosp_col + lin_k_row * cosp_s
-        sk = pair_sinp_col + lin_k_row * sinp_s
+        ck = pair_ix_col * tl.full((1,), cosp_p, tl.int32) + \
+             lin_k_row   * tl.full((1,), cosp_s, tl.int32)
+        sk = pair_ix_col * tl.full((1,), sinp_p, tl.int32) + \
+             lin_k_row   * tl.full((1,), sinp_s, tl.int32)
 
-        COS_k = tl.load(
-            COSP + ck,
-            mask=kv_valid[None, :],
-            other=0.0,
-            cache_modifier=".ca",
-        ).to(DTYPE)  # [D2,BKV]
-        SIN_k = tl.load(
-            SINP + sk,
-            mask=kv_valid[None, :],
-            other=0.0,
-            cache_modifier=".ca",
-        ).to(DTYPE)  # [D2,BKV]
+        COS_k = tl.load(COSP + ck,mask=kv_valid[None, :],other=0.0,).to(DTYPE)  # [D2,BKV]
+        SIN_k = tl.load(SINP + sk,mask=kv_valid[None, :],other=0.0,).to(DTYPE)  # [D2,BKV]
 
         is_cls_k_bc = is_cls_k[None, :]   # [1,BKV]
 
@@ -946,9 +780,9 @@ def _attn_bwd_dq_rope(
         Ko_r = tl.where(is_cls_k_bc, Ko, Ke * SIN_k + Ko * COS_k)
 
         # ---- rebuild logits S_tile (same as fwd) ----
-        S_tile = (tl.dot(Qe_r, Ke_r, allow_tf32=True) + tl.dot(Qo_r, Ko_r, allow_tf32=True)).to(tl.float32)  # [BQ,BKV]
-        S_tile = S_tile * softmax_scale_f
-        S_tile = tl.where(mask_qk, S_tile, neg_large)
+        S_tile = (tl.dot(Qe_r, Ke_r) + tl.dot(Qo_r, Ko_r)).to(tl.float32)  # [BQ,BKV]
+        S_tile = S_tile * tl.full((1,), softmax_scale, dtype=tl.float32)
+        S_tile = tl.where(mask_qk, S_tile, -float("inf"))
 
         # ---- reconstruct P from S and M: P = exp(S - M) ----
         P_blk = tl.exp(S_tile - Mi[:, None])             # [BQ,BKV]
@@ -958,21 +792,21 @@ def _attn_bwd_dq_rope(
         dP_blk = tl.dot(
             dO_block.to(tl.float32),
             tl.trans(V_blk).to(tl.float32),
-            allow_tf32=True,
         )  # [BQ,BKV]
 
         # ---- dS = P * (dP - D) ----
         dS_blk = (P_blk * (dP_blk - Di[:, None])).to(DTYPE)  # [BQ,BKV]
 
         # ---- accumulate dQ̂ in pair-space: [BQ,D2] ----
-        dQe_hat_acc += tl.dot(dS_blk, tl.trans(Ke_r), allow_tf32=True)
-        dQo_hat_acc += tl.dot(dS_blk, tl.trans(Ko_r), allow_tf32=True)
+        dQe_hat_acc = tl.dot(dS_blk, tl.trans(Ke_r), dQe_hat_acc)
+        dQo_hat_acc = tl.dot(dS_blk, tl.trans(Ko_r), dQo_hat_acc)
 
     # -------------------------
     # 7) apply softmax_scale once (chain rule for scaled logits)
     # -------------------------
-    dQe_hat_acc *= softmax_scale_f
-    dQo_hat_acc *= softmax_scale_f
+    s_fp32 = tl.full((1,), softmax_scale, dtype=tl.float32)
+    dQe_hat_acc *= s_fp32
+    dQo_hat_acc *= s_fp32
 
     # -------------------------
     # 8) un-rotate dQ̂ → dQ (Rᵀ in Q space)
@@ -1019,13 +853,6 @@ class TritonAttention(torch.autograd.Function):
             assert SEQ_LEN == 1 + N_img, f"SEQ_LEN must be 1 + H_img*W_img when has_cls=True (got {SEQ_LEN} vs {1+N_img})."
         else:
             assert SEQ_LEN == N_img, f"SEQ_LEN must equal H_img*W_img when has_cls=False (got {SEQ_LEN} vs {N_img})."
-
-        if not Q.is_contiguous():
-            Q = Q.contiguous()
-        if not K.is_contiguous():
-            K = K.contiguous()
-        if not V.is_contiguous():
-            V = V.contiguous()
 
         comp_triton = _sdpa_comp_dtype(Q)
         softmax_scale = 1.0 / (HEAD_DIM ** 0.5)
