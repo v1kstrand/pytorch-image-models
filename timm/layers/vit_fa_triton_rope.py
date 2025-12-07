@@ -176,6 +176,7 @@ def _attn_fwd(
     BLOCK_KV: tl.constexpr,
     DTYPE: tl.constexpr,            # compute dtype (e.g., tl.float32 or tl.float16)
     GROUP_M: tl.constexpr,
+    CACHE_MOD: tl.constexpr,
 ):
     softmax_scale_f = softmax_scale
     neg_large = -1e9
@@ -471,6 +472,7 @@ def _attn_bwd_dk_dv_rope(
     GROUP_N: tl.constexpr,
     D2: tl.constexpr,        # HEAD_DIM // 2 (num complex pairs)
     HAS_CLS: tl.constexpr,
+    CACHE_MOD: tl.constexpr,
 ):
     tl.static_assert((HEAD_DIM % 4) == 0)
     softmax_scale_f = softmax_scale
@@ -792,6 +794,7 @@ def _attn_bwd_dq_rope(
     softmax_scale: tl.constexpr,
     D2: tl.constexpr,             # HEAD_DIM // 2 (num complex pairs)
     HAS_CLS: tl.constexpr,
+    CACHE_MOD: tl.constexpr,
 ):
     tl.static_assert((HEAD_DIM % 4) == 0)
     softmax_scale_f = softmax_scale
@@ -1117,6 +1120,7 @@ class TritonAttention(torch.autograd.Function):
             HAS_CLS=int(has_cls),
             softmax_scale=softmax_scale,
             DTYPE=comp_triton,
+            CACHE_MOD=CACHE_MOD,
             # keep your existing ones here:
             # BLOCK_Q=..., BLOCK_KV=..., GROUP_M=...
         )
@@ -1169,6 +1173,7 @@ class TritonAttention(torch.autograd.Function):
             DTYPE=ctx.comp_triton,
             D2=HEAD_DIM // 2,
             HAS_CLS=int(ctx.has_cls),
+            CACHE_MOD=CACHE_MOD,
             # plus your existing ones:
             # BLOCK_Q=..., BLOCK_KV=..., GROUP_N=...
         )
@@ -1200,6 +1205,7 @@ class TritonAttention(torch.autograd.Function):
             softmax_scale=ctx.softmax_scale,
             D2=HEAD_DIM // 2,
             HAS_CLS=int(ctx.has_cls),
+            CACHE_MOD=CACHE_MOD,
             # plus your existing ones:
             # BLOCK_Q=..., BLOCK_KV=..., GROUP_M=...
         )
