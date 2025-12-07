@@ -453,9 +453,9 @@ def profile_train_step_online(
     batch_size = 1024,
     img_size = 224,
     criterion = nn.CrossEntropyLoss,
-    device="cuda",
     warmup_steps=10,
     profiled_steps=50,
+    device="cuda",
     autocast_dtype=torch.bfloat16,
     **kwargs
 ):
