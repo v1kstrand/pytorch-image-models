@@ -266,14 +266,12 @@ def _attn_fwd(
         boundary_check=(0, 1),
         padding_option="zero",
         cache_modifier=CACHE_MOD,
-        eviction_policy="evict_last",
     ).to(DTYPE)
     SIN_q = tl.load(
         sinp_q_blk,
         boundary_check=(0, 1),
         padding_option="zero",
         cache_modifier=CACHE_MOD,
-        eviction_policy="evict_last",
     ).to(DTYPE)
 
     # rotate Q pairs; CLS bypass -> identity
@@ -316,14 +314,12 @@ def _attn_fwd(
             boundary_check=(0, 1),
             padding_option="zero",
             cache_modifier=CACHE_MOD,
-            eviction_policy="evict_last",
         ).to(DTYPE)
         Ko = tl.load(
             k_odd_blk,
             boundary_check=(0, 1),
             padding_option="zero",
             cache_modifier=CACHE_MOD,
-            eviction_policy="evict_last",
         ).to(DTYPE)
 
         # ---- K-side RoPE; CLS col bypass ----
@@ -340,15 +336,13 @@ def _attn_fwd(
             COSP + ck_row + ck_col,
             mask=kv_valid[None, :],
             other=0.,
-            cache_modifier=CACHE_MOD,
-            eviction_policy="evict_last",
+        cache_modifier=CACHE_MOD,
         ).to(DTYPE)
         SIN_k = tl.load(
             SINP + sk_row + sk_col,
             mask=kv_valid[None, :],
             other=0.,
             cache_modifier=CACHE_MOD,
-            eviction_policy="evict_last",
         ).to(DTYPE)
 
         Ke_r = tl.where(is_cls_k[None, :], Ke, Ke * COS_k - Ko * SIN_k)
@@ -379,7 +373,6 @@ def _attn_fwd(
             boundary_check=(0, 1),
             padding_option="zero",
             cache_modifier=CACHE_MOD,
-            eviction_policy="evict_last",
         ).to(DTYPE)
 
         O_blk  = O_blk * alpha[:, None].to(DTYPE)
@@ -550,7 +543,6 @@ def _attn_bwd_dk_dv_rope(
         boundary_check=(0, 1),
         padding_option="zero",
         cache_modifier=CACHE_MOD,
-        eviction_policy="evict_last",
     ).to(DTYPE)  # [BKV, D]
 
     # -------------------------
@@ -580,14 +572,12 @@ def _attn_bwd_dk_dv_rope(
         boundary_check=(0, 1),
         padding_option="zero",
         cache_modifier=CACHE_MOD,
-        eviction_policy="evict_last",
     ).to(DTYPE)  # [D2, BKV]
     Ko = tl.load(
         k_odd_blk,
         boundary_check=(0, 1),
         padding_option="zero",
         cache_modifier=CACHE_MOD,
-        eviction_policy="evict_last",
     ).to(DTYPE)  # [D2, BKV]
 
     # RoPE positions for keys
@@ -943,7 +933,6 @@ def _attn_bwd_dq_rope(
             boundary_check=(0, 1),
             padding_option="zero",
             cache_modifier=CACHE_MOD,
-            eviction_policy="evict_last",
         ).to(DTYPE)  # [BKV, D]
 
         # K pairs [D2, BKV]
@@ -969,14 +958,12 @@ def _attn_bwd_dq_rope(
             boundary_check=(0, 1),
             padding_option="zero",
             cache_modifier=CACHE_MOD,
-            eviction_policy="evict_last",
         ).to(DTYPE)  # [D2,BKV]
         Ko = tl.load(
             k_odd_blk,
             boundary_check=(0, 1),
             padding_option="zero",
-            cache_modifier=CACHE_MOD,
-            eviction_policy="evict_last",
+        cache_modifier=CACHE_MOD,
         ).to(DTYPE)  # [D2,BKV]
 
         # K-side RoPE
@@ -995,15 +982,13 @@ def _attn_bwd_dq_rope(
             COSP + ck,
             mask=kv_valid[None, :],
             other=0.0,
-            cache_modifier=CACHE_MOD,
-            eviction_policy="evict_last",
+        cache_modifier=CACHE_MOD,
         ).to(DTYPE)  # [D2,BKV]
         SIN_k = tl.load(
             SINP + sk,
             mask=kv_valid[None, :],
             other=0.0,
-            cache_modifier=CACHE_MOD,
-        eviction_policy="evict_last",
+        cache_modifier=CACHE_MOD,
     ).to(DTYPE)  # [D2,BKV]
 
         is_cls_k_bc = is_cls_k[None, :]   # [1,BKV]
