@@ -214,11 +214,6 @@ def _attn_fwd(
     # ---- row offsets ----
     row_off_q = rows_i[:, None] * sqs                    # [BQ,1]
     row_off_o = rows_i[:, None] * sos                    # [BQ,1]
-    tl.multiple_of(sqd, 8)
-    tl.multiple_of(skd, 8)
-    tl.multiple_of(svd, 8)
-    tl.multiple_of(sod, 8)
-    tl.max_contiguous(pair_ix, 1)
 
     # =========================
     # Q: load even/odd pairs
@@ -529,12 +524,6 @@ def _attn_bwd_dk_dv_rope(
     pair_sinp = pair_ix * sinp_p
     even    = 2 * pair_ix                      # 0,2,4,...
     odd     = 2 * pair_ix + 1                  # 1,3,5,...
-    tl.multiple_of(sqd, 8)
-    tl.multiple_of(skd, 8)
-    tl.multiple_of(svd, 8)
-    tl.multiple_of(s_dkd, 8)
-    tl.multiple_of(s_dvd, 8)
-    tl.max_contiguous(pair_ix, 1)
 
     # -------------------------
     # 3) this KV tile: indices + V block
@@ -860,12 +849,6 @@ def _attn_bwd_dq_rope(
     pair_sinp = pair_ix * sinp_p
     even    = 2 * pair_ix                        # 0,2,4,...
     odd     = 2 * pair_ix + 1                    # 1,3,5,...
-    tl.multiple_of(sqd, 8)
-    tl.multiple_of(skd, 8)
-    tl.multiple_of(svd, 8)
-    tl.multiple_of(dod, 8)
-    tl.multiple_of(s_dqd, 8)
-    tl.max_contiguous(pair_ix, 1)
 
     d_idx = tl.arange(0, HEAD_DIM).to(tl.int32)[None, :]  # [1, D]
 
