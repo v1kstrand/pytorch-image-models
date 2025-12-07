@@ -6,6 +6,84 @@ GROUP_NM_SWEEP = [2, 4, 8]
 NUM_STAGES_SWEEP = [1, 2, 3, 4]
 NUM_WARPS_SWEEP = [2, 4]
 
+# Focused autotune grids: small sets plus a couple tensor-core–friendly picks.
+FWD_CONFIGS = [
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 128, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 256, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 64, "BLOCK_KV": 64, "GROUP_M": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 64, "GROUP_M": 4}, num_stages=2, num_warps=4),
+]
+
+DKDV_CONFIGS = [
+    triton.Config({"BLOCK_Q": 64, "BLOCK_KV": 128, "GROUP_N": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 64, "BLOCK_KV": 256, "GROUP_N": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 32, "BLOCK_KV": 128, "GROUP_N": 4}, num_stages=2, num_warps=4),
+]
+
+DQ_CONFIGS = [
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 128, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 256, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 64, "BLOCK_KV": 128, "GROUP_M": 4}, num_stages=2, num_warps=4),
+]
+
+# Override with expanded yet focused grids (~15 configs each) and a global cache modifier toggle.
+USE_CA = True
+CACHE_MOD = ".ca" if USE_CA else ".cg"
+
+FWD_CONFIGS = [
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 128, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 256, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 64,  "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 32,  "GROUP_M": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 128, "GROUP_M": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 64,  "GROUP_M": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 32,  "GROUP_M": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 256, "BLOCK_KV": 128, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 256, "BLOCK_KV": 256, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 256, "BLOCK_KV": 64,  "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 128, "GROUP_M": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 256, "GROUP_M": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 256, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 256, "BLOCK_KV": 128, "GROUP_M": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 64,  "GROUP_M": 2}, num_stages=2, num_warps=4),
+]
+
+DKDV_CONFIGS = [
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 128, "GROUP_N": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 256, "GROUP_N": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 64,  "GROUP_N": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 32,  "BLOCK_KV": 128, "GROUP_N": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 32,  "BLOCK_KV": 64,  "GROUP_N": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 128, "GROUP_N": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 256, "GROUP_N": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 128, "GROUP_N": 8}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 32,  "BLOCK_KV": 256, "GROUP_N": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 32,  "BLOCK_KV": 128, "GROUP_N": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 64,  "GROUP_N": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 32,  "BLOCK_KV": 64,  "GROUP_N": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 256, "GROUP_N": 8}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 32,  "BLOCK_KV": 256, "GROUP_N": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 128, "GROUP_N": 6}, num_stages=3, num_warps=8),
+]
+
+DQ_CONFIGS = [
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 128, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 256, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 64,  "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 128, "GROUP_M": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 64,  "GROUP_M": 4}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 256, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 256, "GROUP_M": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 128, "GROUP_M": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 64,  "GROUP_M": 2}, num_stages=2, num_warps=4),
+    triton.Config({"BLOCK_Q": 256, "BLOCK_KV": 128, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 256, "BLOCK_KV": 256, "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 256, "BLOCK_KV": 64,  "GROUP_M": 4}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 128, "GROUP_M": 6}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 128, "BLOCK_KV": 256, "GROUP_M": 6}, num_stages=3, num_warps=8),
+    triton.Config({"BLOCK_Q": 64,  "BLOCK_KV": 128, "GROUP_M": 2}, num_stages=2, num_warps=4),
+]
+
 KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]
 def build_axial_rope_pairs(
     side_len: int,
@@ -73,21 +151,7 @@ def _sdpa_comp_dtype(x: torch.Tensor) -> torch.dtype:
     raise dtype
 
 
-@triton.autotune(
-    [
-        triton.Config(
-            {"BLOCK_Q": BLOCK_Q, "BLOCK_KV": BLOCK_KV, "GROUP_M": GROUP_M},
-            num_stages=num_stages,
-            num_warps=num_warps,
-        )
-        for BLOCK_Q in [64, 128]
-        for BLOCK_KV in [32, 64]
-        for GROUP_M in GROUP_NM_SWEEP
-        for num_stages in NUM_STAGES_SWEEP
-        for num_warps in NUM_WARPS_SWEEP
-    ],
-    key=KEY_CACHE,
-)
+@triton.autotune(FWD_CONFIGS, key=KEY_CACHE)
 @triton.jit
 def _attn_fwd(
     Q, K, V, M, O,                 # Q,K,V:[B,H,S,D]; M:[B,H,S] (fp32); O:[B,H,S,D]
@@ -150,6 +214,11 @@ def _attn_fwd(
     # ---- row offsets ----
     row_off_q = rows_i[:, None] * sqs                    # [BQ,1]
     row_off_o = rows_i[:, None] * sos                    # [BQ,1]
+    tl.multiple_of(sqd, 8)
+    tl.multiple_of(skd, 8)
+    tl.multiple_of(svd, 8)
+    tl.multiple_of(sod, 8)
+    tl.max_contiguous(pair_ix, 1)
 
     # =========================
     # Q: load even/odd pairs
@@ -164,13 +233,13 @@ def _attn_fwd(
         base_Q + row_off_q + qcol_e[None, :],
         mask=q_valid[:, None],
         other=0.,
-        cache_modifier=".ca",
+        cache_modifier=CACHE_MOD,
     ).to(DTYPE)
     Qo = tl.load(
         base_Q + row_off_q + qcol_o[None, :],
         mask=q_valid[:, None],
         other=0.,
-        cache_modifier=".ca",
+        cache_modifier=CACHE_MOD,
     ).to(DTYPE)
 
     # ---- Q-side RoPE (pairwise [N_pos, D2]) ----
@@ -178,23 +247,37 @@ def _attn_fwd(
     lin_q    = tl.maximum(lin_q, 0).to(tl.int32)         # clamp at 0
     is_cls_q = (HAS_CLS != 0) & (rows == 0)
 
-    # pointer offsets into COSP/SINP: [BQ,D2]
-    c_row = lin_q[:, None]   * cosp_s
-    c_col = pair_cosp[None, :]
-    s_row = lin_q[:, None]   * sinp_s
-    s_col = pair_sinp[None, :]
-
+    # stage Q-side RoPE block once per tile
+    lin_q_base = tl.maximum(start_q - HAS_CLS, 0)
+    cosp_q_blk = tl.make_block_ptr(
+        COSP,
+        (SEQ_LEN, D2),
+        (cosp_s, cosp_p),
+        (lin_q_base, 0),
+        (BLOCK_Q, D2),
+        (1, 1),
+    )
+    sinp_q_blk = tl.make_block_ptr(
+        SINP,
+        (SEQ_LEN, D2),
+        (sinp_s, sinp_p),
+        (lin_q_base, 0),
+        (BLOCK_Q, D2),
+        (1, 1),
+    )
     COS_q = tl.load(
-        COSP + c_row + c_col,
-        mask=q_valid[:, None],
-        other=0.,
-        cache_modifier=".ca",
+        cosp_q_blk,
+        boundary_check=(0, 1),
+        padding_option="zero",
+        cache_modifier=CACHE_MOD,
+        eviction_policy="evict_last",
     ).to(DTYPE)
     SIN_q = tl.load(
-        SINP + s_row + s_col,
-        mask=q_valid[:, None],
-        other=0.,
-        cache_modifier=".ca",
+        sinp_q_blk,
+        boundary_check=(0, 1),
+        padding_option="zero",
+        cache_modifier=CACHE_MOD,
+        eviction_policy="evict_last",
     ).to(DTYPE)
 
     # rotate Q pairs; CLS bypass -> identity
@@ -236,13 +319,15 @@ def _attn_fwd(
             k_even_blk,
             boundary_check=(0, 1),
             padding_option="zero",
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
+            eviction_policy="evict_last",
         ).to(DTYPE)
         Ko = tl.load(
             k_odd_blk,
             boundary_check=(0, 1),
             padding_option="zero",
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
+            eviction_policy="evict_last",
         ).to(DTYPE)
 
         # ---- K-side RoPE; CLS col bypass ----
@@ -259,13 +344,15 @@ def _attn_fwd(
             COSP + ck_row + ck_col,
             mask=kv_valid[None, :],
             other=0.,
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
+            eviction_policy="evict_last",
         ).to(DTYPE)
         SIN_k = tl.load(
             SINP + sk_row + sk_col,
             mask=kv_valid[None, :],
             other=0.,
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
+            eviction_policy="evict_last",
         ).to(DTYPE)
 
         Ke_r = tl.where(is_cls_k[None, :], Ke, Ke * COS_k - Ko * SIN_k)
@@ -295,7 +382,8 @@ def _attn_fwd(
             v_blk,
             boundary_check=(0, 1),
             padding_option="zero",
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
+            eviction_policy="evict_last",
         ).to(DTYPE)
 
         O_blk  = O_blk * alpha[:, None].to(DTYPE)
@@ -356,21 +444,7 @@ def _attn_bwd_preprocess(
     offs_q = start_q + tl.arange(0, BLOCK_Q)
     tl.store(D + pid_bh * SEQ_LEN + offs_q, D_block, mask=offs_q < SEQ_LEN)
 
-@triton.autotune(
-    [
-        triton.Config(
-            {"BLOCK_Q": BLOCK_Q, "BLOCK_KV": BLOCK_KV, "GROUP_N": GROUP_N},
-            num_stages=num_stages,
-            num_warps=num_warps,
-        )
-        for BLOCK_Q in [32, 64]
-        for BLOCK_KV in [64, 128]
-        for GROUP_N in GROUP_NM_SWEEP
-        for num_stages in NUM_STAGES_SWEEP
-        for num_warps in NUM_WARPS_SWEEP
-    ],
-    key=KEY_CACHE,
-)
+@triton.autotune(DKDV_CONFIGS, key=KEY_CACHE)
 @triton.jit
 def _attn_bwd_dk_dv_rope(
     Q, K, V, dO, dK, dV, M, D,
@@ -455,6 +529,12 @@ def _attn_bwd_dk_dv_rope(
     pair_sinp = pair_ix * sinp_p
     even    = 2 * pair_ix                      # 0,2,4,...
     odd     = 2 * pair_ix + 1                  # 1,3,5,...
+    tl.multiple_of(sqd, 8)
+    tl.multiple_of(skd, 8)
+    tl.multiple_of(svd, 8)
+    tl.multiple_of(s_dkd, 8)
+    tl.multiple_of(s_dvd, 8)
+    tl.max_contiguous(pair_ix, 1)
 
     # -------------------------
     # 3) this KV tile: indices + V block
@@ -478,7 +558,8 @@ def _attn_bwd_dk_dv_rope(
         v_blk,
         boundary_check=(0, 1),
         padding_option="zero",
-        cache_modifier=".ca",
+        cache_modifier=CACHE_MOD,
+        eviction_policy="evict_last",
     ).to(DTYPE)  # [BKV, D]
 
     # -------------------------
@@ -507,13 +588,15 @@ def _attn_bwd_dk_dv_rope(
         k_even_blk,
         boundary_check=(0, 1),
         padding_option="zero",
-        cache_modifier=".ca",
+        cache_modifier=CACHE_MOD,
+        eviction_policy="evict_last",
     ).to(DTYPE)  # [D2, BKV]
     Ko = tl.load(
         k_odd_blk,
         boundary_check=(0, 1),
         padding_option="zero",
-        cache_modifier=".ca",
+        cache_modifier=CACHE_MOD,
+        eviction_policy="evict_last",
     ).to(DTYPE)  # [D2, BKV]
 
     # RoPE positions for keys
@@ -532,13 +615,13 @@ def _attn_bwd_dk_dv_rope(
         COSP + ck,
         mask=kv_valid[None, :],
         other=0.0,
-        cache_modifier=".ca",
+        cache_modifier=CACHE_MOD,
     ).to(DTYPE)  # [D2, BKV]
     SIN_k = tl.load(
         SINP + sk,
         mask=kv_valid[None, :],
         other=0.0,
-        cache_modifier=".ca",
+        cache_modifier=CACHE_MOD,
     ).to(DTYPE)  # [D2, BKV]
 
     is_cls_k_bc = is_cls_k[None, :]   # [1,BKV]
@@ -598,13 +681,13 @@ def _attn_bwd_dk_dv_rope(
             COSP + c_row + c_col,
             mask=q_valid[:, None],
             other=0.0,
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
         ).to(DTYPE)  # [BQ,D2]
         SIN_q = tl.load(
             SINP + s_row + s_col,
             mask=q_valid[:, None],
             other=0.0,
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
         ).to(DTYPE)
 
         Qe_r = tl.where(is_cls_q_bc, Qe, Qe * COS_q - Qo * SIN_q)
@@ -690,21 +773,7 @@ def _attn_bwd_dk_dv_rope(
     )
     tl.store(dV_blk, dV_acc.to(dV.type.element_ty), boundary_check=(0, 1))
 
-@triton.autotune(
-    [
-        triton.Config(
-            {"BLOCK_Q": BLOCK_Q, "BLOCK_KV": BLOCK_KV, "GROUP_M": GROUP_M},
-            num_stages=num_stages,
-            num_warps=num_warps,
-        )
-        for BLOCK_Q in [64, 128]
-        for BLOCK_KV in [32, 64]
-        for GROUP_M in GROUP_NM_SWEEP
-        for num_stages in NUM_STAGES_SWEEP
-        for num_warps in NUM_WARPS_SWEEP
-    ],
-    key=KEY_CACHE,
-)
+@triton.autotune(DQ_CONFIGS, key=KEY_CACHE)
 @triton.jit
 def _attn_bwd_dq_rope(
     Q, K, V, dO, dQ, M, D,          # tensors
@@ -791,6 +860,12 @@ def _attn_bwd_dq_rope(
     pair_sinp = pair_ix * sinp_p
     even    = 2 * pair_ix                        # 0,2,4,...
     odd     = 2 * pair_ix + 1                    # 1,3,5,...
+    tl.multiple_of(sqd, 8)
+    tl.multiple_of(skd, 8)
+    tl.multiple_of(svd, 8)
+    tl.multiple_of(dod, 8)
+    tl.multiple_of(s_dqd, 8)
+    tl.max_contiguous(pair_ix, 1)
 
     d_idx = tl.arange(0, HEAD_DIM).to(tl.int32)[None, :]  # [1, D]
 
@@ -830,13 +905,13 @@ def _attn_bwd_dq_rope(
         COSP + c_row_q + c_col_q,
         mask=q_valid[:, None],
         other=0.0,
-        cache_modifier=".ca",
+        cache_modifier=CACHE_MOD,
     ).to(DTYPE)  # [BQ,D2]
     SIN_q = tl.load(
         SINP + s_row_q + s_col_q,
         mask=q_valid[:, None],
         other=0.0,
-        cache_modifier=".ca",
+        cache_modifier=CACHE_MOD,
     ).to(DTYPE)  # [BQ,D2]
 
     is_cls_q_bc = is_cls_q[:, None]
@@ -881,7 +956,8 @@ def _attn_bwd_dq_rope(
             v_blk,
             boundary_check=(0, 1),
             padding_option="zero",
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
+            eviction_policy="evict_last",
         ).to(DTYPE)  # [BKV, D]
 
         # K pairs [D2, BKV]
@@ -906,13 +982,15 @@ def _attn_bwd_dq_rope(
             k_even_blk,
             boundary_check=(0, 1),
             padding_option="zero",
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
+            eviction_policy="evict_last",
         ).to(DTYPE)  # [D2,BKV]
         Ko = tl.load(
             k_odd_blk,
             boundary_check=(0, 1),
             padding_option="zero",
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
+            eviction_policy="evict_last",
         ).to(DTYPE)  # [D2,BKV]
 
         # K-side RoPE
@@ -931,14 +1009,16 @@ def _attn_bwd_dq_rope(
             COSP + ck,
             mask=kv_valid[None, :],
             other=0.0,
-            cache_modifier=".ca",
+            cache_modifier=CACHE_MOD,
+            eviction_policy="evict_last",
         ).to(DTYPE)  # [D2,BKV]
         SIN_k = tl.load(
             SINP + sk,
             mask=kv_valid[None, :],
             other=0.0,
-            cache_modifier=".ca",
-        ).to(DTYPE)  # [D2,BKV]
+            cache_modifier=CACHE_MOD,
+        eviction_policy="evict_last",
+    ).to(DTYPE)  # [D2,BKV]
 
         is_cls_k_bc = is_cls_k[None, :]   # [1,BKV]
 
