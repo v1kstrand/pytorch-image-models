@@ -251,7 +251,7 @@ def _attn_fwd(
         (cosp_s, cosp_p),
         (lin_q_base, 0),
         (BLOCK_Q, D2),
-        (1, 1),
+        (1, 0),
     )
     sinp_q_blk = tl.make_block_ptr(
         SINP,
@@ -259,7 +259,7 @@ def _attn_fwd(
         (sinp_s, sinp_p),
         (lin_q_base, 0),
         (BLOCK_Q, D2),
-        (1, 1),
+        (1, 0),
     )
     COS_q = tl.load(
         cosp_q_blk,
