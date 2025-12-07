@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from itertools import combinations
 
-from timm.layers.rope import apply_rot_embed_cat, RotaryEmbeddingCat
+from timm.layers.pos_embed_sincos import apply_rot_embed_cat, RotaryEmbeddingCat
 from timm.layers.vit_fa_triton_rope import sdpa_triton_fa_rope, CosSinTable
 
 
