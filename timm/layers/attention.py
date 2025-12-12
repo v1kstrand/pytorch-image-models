@@ -209,7 +209,7 @@ class AttentionRope(nn.Module):
         """
         B, N, C = x.shape
         
-        if 0 and self.qkv and self.fused_attn in (3, 4):
+        if self.qkv and self.fused_attn in (3, 4):
             # For Triton RoPE attention, avoid QKV interleaving along seq dim.
             # Split first (no copy), then reshape per-head. This reduces seq stride
             # from 3*H*D to H*D without calling contiguous().
