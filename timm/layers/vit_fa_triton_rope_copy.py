@@ -3,7 +3,7 @@ import triton
 import triton.language as tl
 
 GROUP_NM_SWEEP = [2, 4, 8]
-NUM_STAGES_SWEEP = [1, 2, 3, 4]
+NUM_STAGES_SWEEP = [2, 3, 4]
 NUM_WARPS_SWEEP = [2, 4]
 
 KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]

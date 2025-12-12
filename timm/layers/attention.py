@@ -208,8 +208,18 @@ class AttentionRope(nn.Module):
             Tensor of shape (batch_size, sequence_length, embedding_dim)
         """
         B, N, C = x.shape
+        
+        if 0 and self.qkv and self.fused_attn in (3, 4):
+            # For Triton RoPE attention, avoid QKV interleaving along seq dim.
+            # Split first (no copy), then reshape per-head. This reduces seq stride
+            # from 3*H*D to H*D without calling contiguous().
+            qkv = self.qkv(x)  # (B, N, 3 * attn_dim), contiguous
+            q, k, v = qkv.chunk(3, dim=-1)  # each (B, N, attn_dim), views
+            q = q.view(B, N, self.num_heads, -1).transpose(1, 2)
+            k = k.view(B, N, self.num_heads, -1).transpose(1, 2)
+            v = v.view(B, N, self.num_heads, -1).transpose(1, 2)
 
-        if self.qkv is not None:
+        elif self.qkv is not None:
             qkv = self.qkv(x)
             qkv = qkv.reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
             q, k, v = qkv.unbind(0)  # B, num_heads, N, head_dim
@@ -247,4 +257,3 @@ class AttentionRope(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
-

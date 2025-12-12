@@ -3,7 +3,7 @@ import triton
 import triton.language as tl
 
 GROUP_NM_SWEEP = [2, 4, 8]
-NUM_STAGES_SWEEP = [1, 2, 3, 4]
+NUM_STAGES_SWEEP = [2, 3, 4]
 NUM_WARPS_SWEEP = [2, 4]
 
 KEY_CACHE = ["BATCH_SIZE", "NUM_HEADS", "SEQ_LEN", "HEAD_DIM"]
@@ -73,6 +73,10 @@ def _sdpa_comp_dtype(x: torch.Tensor) -> torch.dtype:
     raise dtype
 
 
+def _sdpa_comp_torch_dtype(x: torch.Tensor) -> torch.dtype:
+    return torch.get_autocast_dtype('cuda') if torch.is_autocast_enabled() else x.dtype
+
+
 @triton.autotune(
     [
         triton.Config(
@@ -81,7 +85,7 @@ def _sdpa_comp_dtype(x: torch.Tensor) -> torch.dtype:
             num_warps=num_warps,
         )
         for BLOCK_Q in [64, 128]
-        for BLOCK_KV in [32, 64]
+        for BLOCK_KV in [32, 64, 128]
         for GROUP_M in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -146,30 +150,29 @@ def _attn_fwd(
     pair_ix = tl.arange(0, D2).to(tl.int32)              # complex pairs
     pair_cosp = pair_ix * cosp_p
     pair_sinp = pair_ix * sinp_p
+    even = 2 * pair_ix
+    odd  = even + 1
 
     # ---- row offsets ----
     row_off_q = rows_i[:, None] * sqs                    # [BQ,1]
     row_off_o = rows_i[:, None] * sos                    # [BQ,1]
 
     # =========================
-    # Q: load even/odd pairs
+    # Q: load even/odd pairs (safe 2D loads)
     # =========================
     base_Q = Q + off_bh_q
-
-    qcol_e = (2 * pair_ix)     * sqd                     # [D2]
-    qcol_o = (2 * pair_ix + 1) * sqd                     # [D2]
-
-    # Q_even, Q_odd: [BQ, D2]
+    qcol_e = even * sqd
+    qcol_o = odd * sqd
     Qe = tl.load(
         base_Q + row_off_q + qcol_e[None, :],
         mask=q_valid[:, None],
-        other=0.,
+        other=0.0,
         cache_modifier=".ca",
-    ).to(DTYPE)
+    ).to(DTYPE)  # [BQ, D2]
     Qo = tl.load(
         base_Q + row_off_q + qcol_o[None, :],
         mask=q_valid[:, None],
-        other=0.,
+        other=0.0,
         cache_modifier=".ca",
     ).to(DTYPE)
 
@@ -209,12 +212,13 @@ def _attn_fwd(
     # =========================
     # KV loop
     # =========================
+    base_K = K + off_bh_k
+    base_V = V + off_bh_v
     for start_kv in range(0, SEQ_LEN, BLOCK_KV):
         kv_cols   = start_kv + cols
         kv_valid  = kv_cols < SEQ_LEN
 
         # ---- K: load even/odd pairs [D2,BKV] ----
-        base_K = K + off_bh_k
         k_even_blk = tl.make_block_ptr(
             base_K,
             (D2, SEQ_LEN),
@@ -231,7 +235,6 @@ def _attn_fwd(
             (D2, BLOCK_KV),
             (0, 1),
         )
-
         Ke = tl.load(
             k_even_blk,
             boundary_check=(0, 1),
@@ -284,7 +287,7 @@ def _attn_fwd(
 
         # ---- accumulate O ----
         v_blk = tl.make_block_ptr(
-            V + off_bh_v,
+            base_V,
             (SEQ_LEN, HEAD_DIM),
             (svs, svd),
             (start_kv, 0),
@@ -485,7 +488,6 @@ def _attn_bwd_dk_dv_rope(
     # 4) K pairs + K-side RoPE ⇒ K̂ (pairwise)
     # -------------------------
     base_K   = K + off_bh_k
-
     k_even_blk = tl.make_block_ptr(
         base_K,
         (D2, SEQ_LEN),
@@ -502,7 +504,6 @@ def _attn_bwd_dk_dv_rope(
         (D2, BLOCK_KV),
         (0, 1),
     )
-
     Ke = tl.load(
         k_even_blk,
         boundary_check=(0, 1),
@@ -514,7 +515,7 @@ def _attn_bwd_dk_dv_rope(
         boundary_check=(0, 1),
         padding_option="zero",
         cache_modifier=".ca",
-    ).to(DTYPE)  # [D2, BKV]
+    ).to(DTYPE)
 
     # RoPE positions for keys
     lin_k = k_idx - HAS_CLS
@@ -575,12 +576,20 @@ def _attn_bwd_dk_dv_rope(
 
         # ---- Q pairs [BQ, D2] ----
         row_off_q = rows64[:, None] * sqs
-
         qcol_e = even * sqd
         qcol_o = odd  * sqd
-
-        Qe = tl.load(base_Q + row_off_q + qcol_e[None, :],mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
-        Qo = tl.load(base_Q + row_off_q + qcol_o[None, :],mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ,D2]
+        Qe = tl.load(
+            base_Q + row_off_q + qcol_e[None, :],
+            mask=q_valid[:, None],
+            other=0.0,
+            cache_modifier=".ca",
+        ).to(DTYPE)
+        Qo = tl.load(
+            base_Q + row_off_q + qcol_o[None, :],
+            mask=q_valid[:, None],
+            other=0.0,
+            cache_modifier=".ca",
+        ).to(DTYPE)
 
         # ---- Q-side RoPE → Q̂ [BQ,D2] ----
         lin_q = rows_q - HAS_CLS
@@ -698,7 +707,7 @@ def _attn_bwd_dk_dv_rope(
             num_warps=num_warps,
         )
         for BLOCK_Q in [64, 128]
-        for BLOCK_KV in [32, 64]
+        for BLOCK_KV in [32, 64, 128]
         for GROUP_M in GROUP_NM_SWEEP
         for num_stages in NUM_STAGES_SWEEP
         for num_warps in NUM_WARPS_SWEEP
@@ -808,12 +817,20 @@ def _attn_bwd_dq_rope(
     # -------------------------
     base_Q    = Q + off_bh_q
     row_off_q = rows64[:, None] * sqs
-
     qcol_e = even * sqd
     qcol_o = odd  * sqd
-
-    Qe = tl.load(base_Q + row_off_q + qcol_e[None, :],mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ, D2]
-    Qo = tl.load(base_Q + row_off_q + qcol_o[None, :],mask=q_valid[:, None],other=0.0,).to(DTYPE)  # [BQ, D2]
+    Qe = tl.load(
+        base_Q + row_off_q + qcol_e[None, :],
+        mask=q_valid[:, None],
+        other=0.0,
+        cache_modifier=".ca",
+    ).to(DTYPE)
+    Qo = tl.load(
+        base_Q + row_off_q + qcol_o[None, :],
+        mask=q_valid[:, None],
+        other=0.0,
+        cache_modifier=".ca",
+    ).to(DTYPE)
 
     # Q-side RoPE
     lin_q    = rows - HAS_CLS
@@ -901,19 +918,18 @@ def _attn_bwd_dq_rope(
             (D2, BLOCK_KV),
             (0, 1),
         )
-
         Ke = tl.load(
             k_even_blk,
             boundary_check=(0, 1),
             padding_option="zero",
             cache_modifier=".ca",
-        ).to(DTYPE)  # [D2,BKV]
+        ).to(DTYPE)
         Ko = tl.load(
             k_odd_blk,
             boundary_check=(0, 1),
             padding_option="zero",
             cache_modifier=".ca",
-        ).to(DTYPE)  # [D2,BKV]
+        ).to(DTYPE)
 
         # K-side RoPE
         lin_k    = k_idx - HAS_CLS
@@ -1029,8 +1045,9 @@ class TritonAttention(torch.autograd.Function):
             (BATCH_SIZE, NUM_HEADS, SEQ_LEN), device=Q.device, dtype=torch.float32
         ) 
 
-        # ---- RoPE tables [N, P] (float32) ----
-        COSP, SINP, = cos_sin.tables()
+        # ---- RoPE tables [N, P] (dtype-matched) ----
+        rope_dtype = _sdpa_comp_torch_dtype(Q)
+        COSP, SINP = cos_sin.tables(dtype=rope_dtype)
 
         # ---- Launch ----
         grid = lambda args: (
@@ -1161,14 +1178,25 @@ class CosSinTable(torch.nn.Module):
             device=device,
             base=base,
         )
-        self.register_buffer("COSP", cos_pairs)  # [N_pos, D2]
-        self.register_buffer("SINP", sin_pairs)  # [N_pos, D2]
+        cos_pairs = cos_pairs.to(torch.float32)
+        sin_pairs = sin_pairs.to(torch.float32)
+        self.register_buffer("COSP", cos_pairs)  # [N_pos, D2] fp32
+        self.register_buffer("SINP", sin_pairs)  # [N_pos, D2] fp32
+        # cached low-precision copies for bandwidth-bound kernels
+        self.register_buffer("COSP_fp16", cos_pairs.to(torch.float16), persistent=False)
+        self.register_buffer("SINP_fp16", sin_pairs.to(torch.float16), persistent=False)
+        self.register_buffer("COSP_bf16", cos_pairs.to(torch.bfloat16), persistent=False)
+        self.register_buffer("SINP_bf16", sin_pairs.to(torch.bfloat16), persistent=False)
 
-    def tables(self):
+    def tables(self, dtype: torch.dtype = torch.float32):
         """
-        Returns (COSP, SINP) in the layout expected by the Triton kernels:
-            COSP, SINP: [N_pos, D2]
+        Returns (COSP, SINP) in the layout expected by the Triton kernels,
+        selecting a cached dtype-matched version when possible.
         """
+        if dtype is torch.float16:
+            return self.COSP_fp16, self.SINP_fp16
+        if dtype is torch.bfloat16:
+            return self.COSP_bf16, self.SINP_bf16
         return self.COSP, self.SINP
     
     
